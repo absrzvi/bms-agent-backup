@@ -13,15 +13,18 @@
 
 ## Requirements
 - **Document Processing**
-  - R1.1: Ingest PDF, CSV, XLSX, and TXT files up to 100 MB with rejection for unsupported types.
-    - *Acceptance*: Upload endpoint returns HTTP 200 with `chunks_processed > 0` for supported files; returns HTTP 400/413 with descriptive errors otherwise.
+  - R1.1: Ingest PDF, CSV, XLSX, and TXT files up to 1 GB with rejection for unsupported types.
+    - *Acceptance*: Upload endpoint streams and processes 1 GB test fixtures without memory errors; returns HTTP 400/413 with descriptive errors for invalid types or oversize payloads.
   - R1.2: Chunk documents using hierarchical strategy (1,500 tokens, 200 overlap) and store embeddings in Qdrant collection `nomad_bms_documents`.
     - *Acceptance*: `scripts/test_processor.py` logs chunk counts; Qdrant collection contains payload metadata per chunk.
 
 - **Search & Retrieval**
-  - R2.1: Provide semantic search via `/api/v1/search/semantic` returning results within 1 s average latency (<500 ms target measured by performance tests).
+  - R2.1: Provide semantic search via `/api/v1/search/semantic` returning responses ≤100 ms p95 latency under 1,000 concurrent requests.
+    - *Acceptance*: `tests/performance/test_performance.py` (and load tests) record ≤100 ms p95 latency with 1,000 simulated clients.
   - R2.2: Achieve ≥95 % top-5 retrieval accuracy on curated validation set (`data/evaluation/ground_truth.jsonl`).
     - *Acceptance*: `scripts/evaluate_retrieval.py` reports accuracy ≥95 %.
+  - R2.3: Support hybrid retrieval (semantic + keyword/BM25) with query-time fusion.
+    - *Acceptance*: Hybrid search endpoint returns both dense and sparse scores; integration tests verify BM25 keywords stored in Qdrant payload and exposed via API.
 
 - **Security & Compliance**
   - R3.1: Protect all API and webhook endpoints with JWT (RS256) plus internal API key as per constitution §3; tokens validated against the public key provided in `BMS_JWT_PUBLIC_KEY` (signing key managed by upstream identity service).
@@ -35,14 +38,19 @@
 - **Testing & Quality**
   - R5.1: Maintain ≥80% coverage for core logic; integrate CI (GitHub Actions) with security scans (Bandit, Safety) and performance benchmarks.
   - R5.2: Include regression, performance, and security tests invoked by `pytest` markers.
+  - R5.3: Enforce pre-commit tooling (Black, Ruff, mypy) and NumPy-style docstrings on all public interfaces; CI must fail if formatting, linting, or typing checks regress.
 
 - **Workflow & Change Management**
   - R6.1: Adopt Git flow branching for feature development (e.g., `feature/<name>`, `release/<version>`) with semantic commit messages.
   - R6.2: Document database/data store changes through a migration log (`docs/migrations.md`) even when applying manual steps during the MVP.
+  - R6.3: Produce container images for the API service, follow semantic versioning, and automate database migrations as part of the release workflow.
+  
+- **Observability & Operations (Post-MVP)**
+  - R7.1: Expose Prometheus-compatible metrics and ship a Grafana dashboard with 99.99 % availability alerts (latency/error budgets) per constitution §8 (scheduled for post-MVP delivery).
 
 ## Acceptance Criteria Summary
-- Supported file types ingest successfully; invalid files rejected with specific errors.
-- Semantic search responds <500 ms average (performance test suite).
+- Supported file types (≤1 GB) ingest successfully; invalid files rejected with specific errors.
+- Semantic/hybrid search responds ≤100 ms p95 under 1,000 concurrent users.
 - Retrieval evaluation script reports ≥95 % accuracy.
 - JWT + API key enforcement validated by automated tests; unauthorized access denied.
 - Monitoring endpoints return status objects and metrics; referenced in operations playbook.

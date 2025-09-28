@@ -52,11 +52,11 @@ Single-pod deployment on RunPod.io with direct binary installations (no Docker) 
 - Create `docs/migrations.md` to track any manual data/schema changes executed during the MVP.
 
 ### Phase 1 – Environment & Qdrant (`T001–T005`)
-1. Provision project directories and persistent storage (`tasks.md` `T001`).
+1. Provision project directories and persistent storage (`tasks.md` `T001`) sized for ≥1 TB to support multi-GB uploads and indexes.
 2. Create Python virtual environment and install dependencies as per `reqs/requirements.txt` (`T002`).
 3. Install Qdrant binary 1.7.4 locally (no Docker) and place logs under `~/persistent/logs` (`T003`).
-4. Generate `scripts/start_qdrant.sh` with optimized settings and start the service (`T004`).
-5. Initialize the `nomad_bms_documents` collection using `scripts/init_qdrant.py` with 1024-d vector schema and on-disk payloads (`T005`).
+4. Generate `scripts/start_qdrant.sh` with optimized settings (on-disk vectors/payloads) and start the service (`T004`).
+5. Initialize the `nomad_bms_documents` collection using `scripts/init_qdrant.py` with 1024-d vector schema plus sparse vector support for hybrid search (`T005`).
 
 ### Phase 2 – Core Application (`T006`, `T007`, `T011`)
 1. Author `api/processor_wrapper.py` that wraps `EnhancedDocumentProcessor`, handles chunking, embeddings via Ollama, and upserts to Qdrant.
@@ -67,6 +67,8 @@ Single-pod deployment on RunPod.io with direct binary installations (no Docker) 
    - `GET /health` and `GET /health/detailed`
    - Root endpoint summarising capabilities
 4. Ensure all endpoints load configuration from environment variables with reasonable defaults for local development.
+5. Implement streaming upload pipeline capable of handling 1 GB files without exhausting memory and persist both dense and sparse (keyword/BM25) payloads for each chunk.
+6. Expose hybrid search utilities in the wrapper (query fusion, keyword extraction) for reuse by future endpoints.
 
 ### Phase 3 – Integrations (`T008`, `T009`)
 - Build n8n Slack workflow (`n8n/workflows/slack_bot.json`) to call the FastAPI search endpoint and format responses.
@@ -81,21 +83,25 @@ Single-pod deployment on RunPod.io with direct binary installations (no Docker) 
 2. Wire security dependencies into FastAPI routes and ensure 403/429 handling is covered by tests.
 3. Update `docs/security-notes.md` to track remaining items and confirmation checks.
 
-### Phase 5 – Documentation & CI/CD (`T015`, `T016`)
+### Phase 5 – Documentation, Tooling & CI/CD (`T015`, `T016`, `T023`, `T024` – post-MVP optional)
 - Maintain `README.md`, `TESTING.md`, `DEPLOYMENT_CHECKLIST.md`, and `reports/performance-baseline.md` with instructions reflecting current architecture.
-- Configure GitHub Actions (`.github/workflows/ci-cd.yml`) to run tests, coverage, security scans (Bandit, Safety), and provide deployment placeholders for RunPod automation.
-- Document required secrets (`BMS_API_KEY`, `DEPLOY_KEY`, optional `CODECOV_TOKEN`, `SAFETY_API_KEY`, future `RUNPOD_USER/HOST`).
+- Configure GitHub Actions (`.github/workflows/ci-cd.yml`) to run tests, coverage, security scans (Bandit, Safety), pre-commit hooks (Black, Ruff, mypy), and provide deployment placeholders for RunPod automation.
+- Introduce repository tooling (`pre-commit`, formatting, linting, typing) and fail builds on formatting/type regressions (`T023`, planned post-MVP).
+- Define container build pipeline (OCI image for FastAPI service), semantic versioning policy, and automated migration scripts invoked during deploy (`T024`, planned post-MVP).
+- Document required secrets (`BMS_API_KEY`, `DEPLOY_KEY`, optional `CODECOV_TOKEN`, `SAFETY_API_KEY`, future `RUNPOD_USER/HOST`, `REGISTRY_USERNAME/PASSWORD`).
 
-### Phase 6 – Testing & Evaluation (`T010`, `T017`, `T019`)
+### Phase 6 – Testing & Evaluation (`T010`, `T017`, `T019`, `T020`)
 1. Use `scripts/run_tests.sh` to orchestrate integration tests (processor, API smoke checks).
-2. Expand `tests/test_basic.py`, `tests/performance/test_performance.py` for regression and latency targets.
+2. Expand `tests/test_basic.py`, `tests/performance/test_performance.py`, and dedicated load tests to verify ≤100 ms p95 latency with 1,000 concurrent requests (e.g., Locust/Gatling scenarios).
 3. Create evaluation dataset (`data/evaluation/ground_truth.jsonl`) and `scripts/evaluate_retrieval.py` to compute top-5 accuracy ≥95 %.
-4. Integrate evaluation into CI (report accuracy figure and fail if below threshold).
+4. Add hybrid retrieval regression tests validating keyword enrichment and dense/sparse fusion logic.
+5. Integrate evaluation into CI (report accuracy figure and fail if below threshold) and surface performance/hybrid results in pipeline artifacts.
 
-### Phase 7 – Operations & Monitoring (`T012`, `T013`, `T018`)
+### Phase 7 – Observability & Operations (`T012`, `T013`, `T018`, `T021` – post-MVP optional)
 1. Manage lifecycle via `scripts/manage_services.sh` (start/stop/status) and `scripts/health_check.sh`.
-2. Implement `/metrics/uplink` endpoint exposing latency histogram, request counts, and error totals for scraping (curl-friendly JSON until formal Prometheus integration).
-3. Document monitoring routine, log rotation, and incident response in `DEPLOYMENT_CHECKLIST.md`.
+2. Implement `/metrics/uplink` endpoint exposing latency histogram, request counts, and error totals for scraping.
+3. Expose Prometheus metrics (FastAPI + Qdrant exporters) and provision Grafana dashboards/alert rules aligned to 99.99 % availability (`T021`, scheduled post-MVP).
+4. Document monitoring routine, log rotation, and incident response in `DEPLOYMENT_CHECKLIST.md`.
 
 ## File Structure
 ```

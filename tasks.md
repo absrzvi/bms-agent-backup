@@ -202,14 +202,18 @@ class DocumentProcessorWrapper:
             "document_id": result.get('document_id', file_path.stem),
             "chunks_processed": len(points),
             "processing_success": result.get('processing_success', True)
-        }
+EOL
 
-    async def search_documents(self, query: str, limit: int = 5) -> List[Dict]:
+chmod +x ~/bms-agent/api/main.py
+Dependencies: T006
+Output: FastAPI application with all endpoints
+ = 5) -> List[Dict]:
         """Search documents using vector similarity"""
         # Get query embedding
         embedding = await self.get_embedding(query)
         
         # Search Qdrant
+{{ ... }}
         results = self.qdrant.search(
             collection_name=self.collection_name,
             query_vector=("chunk_embedding", embedding),
@@ -828,11 +832,12 @@ Output: CI pipeline definition committed, secrets checklist documented
 
 Performance & Load Validation
 T017: Establish Performance Baselines
-Summary: Capture latency targets and test coverage for performance.
+Summary: Validate ≤100 ms p95 latency under 1,000 concurrent users.
 Steps:
-- Maintain `tests/performance/test_performance.py` to benchmark `/api/v1/search/semantic` and record average/p95 latency.
-- Update `reports/performance-baseline.md` after each run with date, model versions, and observations.
-- Include performance marker in CI (optional scheduled workflow).
+- Maintain `tests/performance/test_performance.py` to benchmark `/api/v1/search/semantic` and ensure ≤100 ms p95 latency.
+- Author load scenarios (Locust/Gatling) simulating 1,000 concurrent clients; gate release on achieving ≤100 ms p95 and ≤50 ms average latency.
+- Update `reports/performance-baseline.md` after each run with date, model versions, throughput, and latency percentiles.
+- Publish performance artifacts as CI attachments for traceability.
 Dependencies: T010, T016
 Output: Performance tests and baseline report ready
 
@@ -846,6 +851,17 @@ Steps:
 Dependencies: T011, T012, T013
 Output: Metrics endpoint, enhanced health script, monitoring docs
 
+Observability Stack
+T021 (Post-MVP Optional): Instrument Prometheus & Grafana
+Summary: Deliver constitution §8 observability stack with proactive alerting.
+Steps:
+- Configure FastAPI and Qdrant Prometheus exporters (add `/metrics` endpoints or Sidecar).
+- Provision Grafana dashboards highlighting latency, error rate, saturation, and availability SLOs (99.99 %).
+- Define alert rules (p95 latency >100 ms, error budget burn) and document escalation workflow in `DEPLOYMENT_CHECKLIST.md`.
+- Add automation/scripts to deploy exporters and dashboards during releases.
+Dependencies: T011, T017, T018
+Output: Prometheus scrape targets configured, Grafana dashboards + alerts published
+
 Retrieval Accuracy Validation
 T019: Evaluate Retrieval Quality
 Summary: Ensure ≥95 % top-5 accuracy per spec requirement R2.2.
@@ -856,6 +872,40 @@ Steps:
 - Update `README.md` and `TESTING.md` with instructions to run evaluation locally.
 Dependencies: T006, T010, T017
 Output: Evaluation dataset, script, CI hook, documentation updates
+
+Hybrid Retrieval Enablement
+T020: Implement Hybrid Search Pipeline
+Summary: Deliver semantic + keyword fusion per spec requirement R2.3.
+Steps:
+- Extend `bms-agent/api/processor_wrapper.py` to persist sparse keyword vectors and expose fusion helpers.
+- Create `api/hybrid_search.py` (or expand existing routes) to merge dense/sparse scores and expose `/api/v1/search/hybrid` endpoint.
+- Update Qdrant schema initialization (`scripts/init_qdrant.py`) to provision sparse vector space and payload indexes.
+- Add integration tests covering BM25 keyword influence and regression cases for hybrid ranking.
+- Document hybrid usage in `README.md` and `TESTING.md`, including sample queries and expected payload fields.
+Dependencies: T006, T011, T017, T019
+Output: Hybrid search endpoint, schema updates, and regression tests completed
+
+Tooling & CI Enforcement
+T023 (Post-MVP Optional): Configure Pre-commit Tooling & CI Gates
+Summary: Enforce formatting, linting, and typing compliance across the repo.
+Steps:
+- Add `.pre-commit-config.yaml` with Black, Ruff, mypy, and docstring validators; document installation in README.
+- Update CI (`.github/workflows/ci-cd.yml`) to run `pre-commit run --all-files` and `mypy` jobs.
+- Ensure failing hooks block merges; record workflow in `docs/development.md` (or README).
+- Provide developer onboarding instructions for enabling hooks locally.
+Dependencies: T015, T016
+Output: Tooling configuration committed, CI enforcing style and type checks
+
+Release Automation
+T024 (Post-MVP Optional): Containerize & Automate Releases
+Summary: Build container images, manage semantic versioning, and automate migrations.
+Steps:
+- Author `Dockerfile`/`docker-compose` for API service and add GitHub Actions job to build/push tagged OCI images.
+- Define semantic versioning workflow (e.g., `release/<version>`) and update `docs/release-process.md` with bump steps.
+- Script automated database/data migrations invoked post-deploy (integrate with RunPod scripts).
+- Store registry credentials in CI secrets and document rollout/rollback procedures.
+Dependencies: T015, T016, T021
+Output: Container build pipeline, release documentation, automated migration scripts
 Execution Order
 
 Setup: T001 → T002

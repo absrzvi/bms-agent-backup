@@ -68,33 +68,22 @@ During integration tests (`tests/test_basic.py`), assert the enriched payload re
 - `processing.collection_name` and `processing.embedding_model`
 - `processing.indexed_chunks[*].metadata` and `processing.indexed_chunks[*].quality`
 - Optional `processing.qdrant_upsert_error` (should be absent on success)
+- 1 GB streaming fixture support (upload helper writes/reads in chunks and does not exceed memory limits)
+- Hybrid-specific assertions when hitting `/api/v1/search/hybrid` (presence of keyword scores, BM25 payload fields)
 
 ### Run Specific Test Type
 ```bash
 # Unit tests
 pytest tests/unit/
 
-# Integration tests
 pytest tests/integration/
 
-# E2E tests
-pytest tests/e2e/
-```
+# Performance tests
+pytest tests/performance/test_performance.py -m performance
 
-### Generate Coverage Report
-```bash
-pytest --cov=./ --cov-report=html
-# Open htmlcov/index.html in browser
-```
-
-## CI/CD Pipeline
-
-The CI/CD pipeline runs on every push and pull request:
-
-1. **Test Job**:
-   - Sets up Python environment
-   - Installs dependencies
-   - Runs all tests with coverage
+# Following suites land with tasks T017/T020
+# pytest tests/performance/load/test_locust.py -m load   # ≤100 ms p95 @ 1,000 concurrent users
+# pytest tests/integration/test_hybrid_search.py -m hybrid
    - Uploads coverage to Codecov
 
 2. **Deploy Job** (main branch only):

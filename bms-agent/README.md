@@ -79,7 +79,7 @@ Set environment variables (consider adding them to `config/env.sh`). Core values
 | `BMS_CHUNK_SIZE` / `BMS_CHUNK_OVERLAP` | Chunking controls for EnhancedDocumentProcessor | `1500` / `200` |
 | `BMS_ENABLE_HYBRID_SEARCH` | Enable keyword + vector payload enrichment | `true` |
 | `BMS_ENABLE_QUALITY_VALIDATION` | Evaluate chunks with RAGAS-style metrics | `true` |
-| `BMS_UPLOAD_MAX_BYTES` | Max upload size for `/documents/upload` | `104857600` (100 MB) |
+| `BMS_UPLOAD_MAX_BYTES` | Max upload size for `/documents/upload` | `1073741824` (1 GB) |
 
 All other processor toggles documented in `bms-agent/api/processor_wrapper.py` follow the same `BMS_*` prefix (e.g., `BMS_ENABLE_OCR`, `BMS_VECTOR_WEIGHT`).
 
@@ -97,17 +97,14 @@ From the project root:
 uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
 
 # Convenience wrapper (start/stop/status)
-./scripts/manage_services.sh start
 ./scripts/manage_services.sh status
-```
 
 ## Document Ingestion Workflow
 
-1. Place source files under `~/persistent/bms_data/uploads/` or upload via API.
-2. `DocumentProcessorWrapper.process_document()` handles chunking, embedding, and
-   storage in Qdrant (`nomad_bms_documents`).
-3. Verify ingestion using
-   `python scripts/test_processor.py` (created in `tasks.md` `T007`).
+1. Place source files under `~/persistent/bms_data/uploads/` or upload via API (streaming up to 1 GB).
+2. `DocumentProcessorWrapper.process_document()` handles chunking, embedding, keyword extraction, and storage in Qdrant (`nomad_bms_documents`).
+3. Verify ingestion using `python scripts/test_processor.py` (created in `tasks.md` `T007`).
+4. After completing `tasks.md` `T020`, inspect hybrid payloads with `qdrant_client` or the `/api/v1/search/hybrid` endpoint to confirm sparse keyword fields are present and indexed.
 
 ## API Usage
 
@@ -122,6 +119,19 @@ curl -X POST http://localhost:8000/api/v1/search/semantic \
      -H "X-API-Key: ${BMS_API_KEY}" \
      -d '{"query": "railway redundancy", "limit": 5}'
 ```
+
+### Hybrid Search (Semantic + Keyword)
+
+> **Note**: `/api/v1/search/hybrid` becomes available once `tasks.md` `T020` is delivered. Prior to that, only semantic search is exposed.
+
+```bash
+curl -X POST http://localhost:8000/api/v1/search/hybrid \
+     -H "Content-Type: application/json" \
+     -H "X-API-Key: ${BMS_API_KEY}" \
+     -d '{"query": "emergency brake vlan", "limit": 5, "keyword_weight": 0.4}'
+```
+
+Returns combined dense/sparse scores along with keyword highlights embedded in each chunk payload.
 
 ### Document Upload
 
@@ -164,6 +174,9 @@ Core testing guidance lives in `TESTING.md`. Common commands:
 pytest -v --cov=./ --cov-report=term-missing
 pytest tests/test_basic.py::test_search_endpoint
 pytest tests/performance/test_performance.py -m performance
+# Following suites land with T017/T020
+# pytest tests/performance/load/test_locust.py -m load   # ≤100 ms p95 @ 1,000 users
+# pytest tests/integration/test_hybrid_search.py -m hybrid
 ```
 
 ## Deployment Automation
@@ -190,6 +203,7 @@ ssh <user>@<runpod-ip> '~/bms-agent/scripts/health_check.sh'
 - **Branching**: Follow Git flow (`feature/<name>`, `release/<version>`, `hotfix/<issue>`). Keep commits semantic (e.g., `feat(api): ...`).
 - **Migrations Log**: Record schema/data adjustments in `docs/migrations.md` with date, summary, and related task/PR references.
 - **Pull Requests**: Prefer small, reviewable PRs mapped to the tasks in `tasks.md`.
+- **Pre-commit Hooks**: Once `tasks.md` `T023` is complete, run `pre-commit install` locally and execute `pre-commit run --all-files` plus `mypy` before opening PRs; CI will mirror these checks.
 
 ## Operations Playbook
 

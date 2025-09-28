@@ -55,16 +55,33 @@ pip install -r reqs/requirements.txt
 pip install -r requirements-test.txt  # Optional: enable full test suite
 ```
 
-## Environment Configuration
-
-Set environment variables (consider adding them to `config/env.sh`):
+### Metrics Uplink
 
 ```bash
-export BMS_API_KEY="change-me"               # Align with CI secrets
-export QDRANT_URL="http://localhost:6333"
-export OLLAMA_URL="http://localhost:11434"
-export COLLECTION_NAME="nomad_bms_documents"
+curl -X GET http://localhost:8000/metrics/uplink \
+     -H "X-API-Key: ${BMS_API_KEY}"
 ```
+
+Returns aggregated counters collected during ingestion/search (e.g., `documents_processed`, `last_search_latency`).
+
+## Environment Configuration
+
+Set environment variables (consider adding them to `config/env.sh`). Core values shown below; override any `BMS_*` variable to tune the processor without code changes:
+
+| Variable | Purpose | Default |
+| --- | --- | --- |
+| `BMS_API_KEY` | Optional API key required for `/api/v1/*` routes | unset (anonymous allowed) |
+| `QDRANT_HOST` / `QDRANT_PORT` | Qdrant connection details | `localhost` / `6333` |
+| `QDRANT_COLLECTION` | Target collection for embeddings | `nomad_bms_documents` |
+| `EMBEDDING_MODEL` | Ollama embedding model used by the wrapper | `snowflake-arctic-embed2` |
+| `EMBEDDING_URL` | Ollama embeddings endpoint | `http://localhost:11434/api/embeddings` |
+| `BMS_PROCESSING_PROFILE` | Processing profile (`RAILWAY`, `TECHNICAL`, …) | `RAILWAY` |
+| `BMS_CHUNK_SIZE` / `BMS_CHUNK_OVERLAP` | Chunking controls for EnhancedDocumentProcessor | `1500` / `200` |
+| `BMS_ENABLE_HYBRID_SEARCH` | Enable keyword + vector payload enrichment | `true` |
+| `BMS_ENABLE_QUALITY_VALIDATION` | Evaluate chunks with RAGAS-style metrics | `true` |
+| `BMS_UPLOAD_MAX_BYTES` | Max upload size for `/documents/upload` | `104857600` (100 MB) |
+
+All other processor toggles documented in `bms-agent/api/processor_wrapper.py` follow the same `BMS_*` prefix (e.g., `BMS_ENABLE_OCR`, `BMS_VECTOR_WEIGHT`).
 
 Create the spec baseline if missing (`tasks.md` → `T000`).
 
@@ -112,6 +129,31 @@ curl -X POST http://localhost:8000/api/v1/search/semantic \
 curl -X POST http://localhost:8000/api/v1/documents/upload \
      -H "X-API-Key: ${BMS_API_KEY}" \
      -F "file=@data/test_documents/test_railway_doc.txt"
+```
+
+**Response payload** includes enriched processing metadata from `DocumentProcessorWrapper.process_document()`:
+
+```json
+{
+  "status": "success",
+  "filename": "test_railway_doc.txt",
+  "bytes_stored": 5421,
+  "processing": {
+    "document_id": "test_railway_doc",
+    "chunks_indexed": 18,
+    "collection_name": "nomad_bms_documents",
+    "embedding_model": "snowflake-arctic-embed2",
+    "quality_report": {"average_quality": 0.91, ...},
+    "indexed_chunks": [
+      {
+        "chunk_key": 0,
+        "metadata": {"hierarchy": "parent", "has_context": true},
+        "quality": {"overall_score": 0.95},
+        "term_frequencies": {"railway": 0.04, ...}
+      }
+    ]
+  }
+}
 ```
 
 ## Testing

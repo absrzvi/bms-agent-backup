@@ -45,9 +45,15 @@ This document outlines the testing strategy for the BMS Agent application, ensur
 # Install test dependencies
 pip install -r requirements-test.txt
 
-# Set environment variables
+# Set environment variables (override as needed)
 export BMS_API_KEY=test-key-123
-export QDRANT_URL=http://localhost:6333
+export QDRANT_HOST=localhost
+export QDRANT_PORT=6333
+export QDRANT_COLLECTION=nomad_bms_test
+export EMBEDDING_MODEL=snowflake-arctic-embed2
+export EMBEDDING_URL=http://localhost:11434/api/embeddings
+export BMS_PROCESSING_PROFILE=RAILWAY
+export BMS_ENABLE_QUALITY_VALIDATION=true
 ```
 
 ## Running Tests
@@ -56,6 +62,12 @@ export QDRANT_URL=http://localhost:6333
 ```bash
 pytest -v --cov=./ --cov-report=term-missing
 ```
+
+During integration tests (`tests/test_basic.py`), assert the enriched payload returned by `/api/v1/documents/upload` contains:
+
+- `processing.collection_name` and `processing.embedding_model`
+- `processing.indexed_chunks[*].metadata` and `processing.indexed_chunks[*].quality`
+- Optional `processing.qdrant_upsert_error` (should be absent on success)
 
 ### Run Specific Test Type
 ```bash

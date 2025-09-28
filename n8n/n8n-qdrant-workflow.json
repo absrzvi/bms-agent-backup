@@ -1,0 +1,406 @@
+{
+  "name": "Qdrant Advanced Railway Document Retrieval v4.0",
+  "nodes": [
+    {
+      "parameters": {
+        "path": "railway-search",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook_trigger",
+      "name": "Webhook - Query Input",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Extract and validate query\nconst query = $input.first().json.query || $input.first().json.body?.query;\n\nif (!query) {\n  throw new Error('Query parameter is required');\n}\n\n// Analyze query for strategy selection\nfunction analyzeQuery(query) {\n  const analysis = {\n    query: query,\n    intent: '',\n    businessArea: '',\n    keywords: [],\n    criticality: 0,\n    searchStrategy: 'standard',\n    filters: {}\n  };\n\n  // Railway-specific keyword detection\n  const railwayPatterns = {\n    network: /CCU|VLAN|WiFi|5G|LTE|router|switch|network|connectivity/i,\n    compliance: /EN50155|EN45545|TSI|EMC|compliance|standard|certification/i,\n    fleet: /Railjet|Cityjet|ÖBB|fleet|train|rolling.?stock/i,\n    technical: /configuration|specification|topology|architecture|design/i\n  };\n\n  // Determine business area\n  if (query.match(/safety|risk|incident|audit|QHSE/i)) {\n    analysis.businessArea = 'QHSE';\n    analysis.filters.business_area = 'QHSE';\n  } else if (query.match(railwayPatterns.network)) {\n    analysis.businessArea = 'Railway Network';\n    analysis.filters.document_type = 'technical';\n  } else if (query.match(/HR|human.?resources|training|employee/i)) {\n    analysis.businessArea = 'Human Resources';\n    analysis.filters.business_area = 'HR';\n  }\n\n  // Determine search strategy\n  if (query.match(/compliance|audit|certification/i)) {\n    analysis.searchStrategy = 'quality_filtered';\n    analysis.criticality = 90;\n    analysis.filters.min_quality = 85;\n    analysis.filters.has_context = true;\n  } else if (query.match(/detailed|procedure|step.?by.?step|comprehensive/i)) {\n    analysis.searchStrategy = 'hierarchical';\n  } else if (query.match(railwayPatterns.network) && query.split(' ').length > 3) {\n    analysis.searchStrategy = 'hybrid';\n  } else if (query.match(/latest|current|recent|updated/i)) {\n    analysis.searchStrategy = 'contextual';\n    analysis.filters.has_context = true;\n  }\n\n  // Extract technical keywords\n  const technicalTerms = query.match(/[A-Z][A-Z0-9]+(?:[\\-\\.][A-Z0-9]+)*/g) || [];\n  analysis.keywords = technicalTerms;\n\n  // Set railway-specific filters\n  if (query.match(/Railjet/i)) {\n    analysis.filters.fleet_type = 'Railjet';\n  }\n  if (query.match(/EN50155|EN45545/)) {\n    const standards = query.match(/EN\\d{5}/g) || [];\n    analysis.filters.standard_compliance = standards;\n  }\n\n  return analysis;\n}\n\nconst analysis = analyzeQuery(query);\n\n// Add metadata\nanalysis.timestamp = new Date().toISOString();\nanalysis.requestId = Math.random().toString(36).substring(7);\n\nreturn analysis;"
+      },
+      "id": "query_analyzer",
+      "name": "Query Analyzer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [450, 300]
+    },
+    {
+      "parameters": {
+        "model": "text-embedding-3-small",
+        "options": {}
+      },
+      "id": "embeddings",
+      "name": "Generate Query Embeddings",
+      "type": "@n8n/n8n-nodes-langchain.embeddingsOpenAI",
+      "typeVersion": 1,
+      "position": [650, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "1",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.searchStrategy }}",
+                    "rightValue": "hierarchical",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.searchStrategy }}",
+                    "rightValue": "hybrid",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "hybrid"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.searchStrategy }}",
+                    "rightValue": "quality_filtered",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "quality"
+            },
+            {
+              "conditions": {
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.searchStrategy }}",
+                    "rightValue": "standard",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ]
+              },
+              "renameOutput": true,
+              "outputKey": "standard"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "strategy_router",
+      "name": "Strategy Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [850, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Hierarchical Search Implementation\n// Search child chunks for precision, return parent chunks for context\n\nconst qdrantUrl = $vars.QDRANT_URL || 'http://localhost:6333';\nconst collectionName = 'railway_documents_v4';\nconst queryEmbedding = $('embeddings').item.json.embedding;\nconst filters = $('query_analyzer').item.json.filters;\nconst limit = 10;\n\n// Step 1: Search child chunks\nconst childSearchBody = {\n  vector: {\n    name: 'child_embedding',\n    vector: queryEmbedding\n  },\n  filter: {\n    must: [\n      { key: 'is_child', match: { value: true } }\n    ]\n  },\n  limit: limit * 2,\n  with_payload: true,\n  with_vector: false\n};\n\n// Add additional filters\nif (filters.business_area) {\n  childSearchBody.filter.must.push({\n    key: 'business_area',\n    match: { value: filters.business_area }\n  });\n}\n\nconst childResults = await $http.request({\n  method: 'POST',\n  url: `${qdrantUrl}/collections/${collectionName}/points/search`,\n  body: childSearchBody,\n  headers: { 'Content-Type': 'application/json' }\n});\n\n// Step 2: Get unique parent IDs\nconst parentIds = [...new Set(\n  childResults.result\n    .map(r => r.payload.parent_chunk_id)\n    .filter(id => id)\n)];\n\n// Step 3: Retrieve parent chunks\nconst parentResults = await $http.request({\n  method: 'POST',\n  url: `${qdrantUrl}/collections/${collectionName}/points`,\n  body: { ids: parentIds.slice(0, limit) },\n  headers: { 'Content-Type': 'application/json' }\n});\n\n// Format results with hierarchical context\nconst results = parentResults.result.map(parent => {\n  const relatedChildren = childResults.result.filter(\n    c => c.payload.parent_chunk_id === parent.id\n  );\n  \n  const maxChildScore = Math.max(\n    ...relatedChildren.map(c => c.score),\n    0\n  );\n  \n  return {\n    id: parent.id,\n    content: parent.payload.content,\n    score: maxChildScore,\n    strategy: 'hierarchical',\n    metadata: {\n      document_id: parent.payload.document_id,\n      document_name: parent.payload.document_name,\n      section: parent.payload.section_title,\n      child_count: parent.payload.child_count || relatedChildren.length,\n      quality_score: parent.payload.quality_score,\n      has_context: parent.payload.has_context,\n      hierarchy_level: 'parent',\n      child_matches: relatedChildren.length\n    },\n    children_preview: relatedChildren.slice(0, 3).map(c => ({\n      content: c.payload.content.substring(0, 200),\n      score: c.score\n    }))\n  };\n});\n\n// Sort by score\nresults.sort((a, b) => b.score - a.score);\n\nreturn {\n  results: results.slice(0, limit),\n  strategy: 'hierarchical',\n  total_parents_found: parentIds.length,\n  total_children_searched: childResults.result.length,\n  execution_time_ms: Date.now() - $now.toMillis()\n};"
+      },
+      "id": "hierarchical_search",
+      "name": "Hierarchical Search",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 100]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Hybrid Search with Reciprocal Rank Fusion\n// Combines dense vector search with sparse keyword search\n\nconst qdrantUrl = $vars.QDRANT_URL || 'http://localhost:6333';\nconst collectionName = 'railway_documents_v4';\nconst query = $('query_analyzer').item.json.query;\nconst queryEmbedding = $('embeddings').item.json.embedding;\nconst filters = $('query_analyzer').item.json.filters;\nconst alpha = 0.6; // Dense weight\nconst k = 60; // RRF constant\nconst limit = 10;\n\n// Generate sparse vector from keywords\nfunction generateSparseVector(text) {\n  const tokens = text.toLowerCase().split(/\\W+/);\n  const termFreq = {};\n  \n  // Calculate term frequencies\n  tokens.forEach(token => {\n    if (token.length > 2) {\n      termFreq[token] = (termFreq[token] || 0) + 1;\n    }\n  });\n  \n  // Convert to sparse format\n  const indices = [];\n  const values = [];\n  let idx = 0;\n  \n  Object.entries(termFreq).forEach(([token, freq]) => {\n    // Simple hash function for token index\n    const hashIdx = token.split('').reduce((acc, char) => {\n      return ((acc << 5) - acc) + char.charCodeAt(0);\n    }, 0) % 10000;\n    \n    indices.push(Math.abs(hashIdx));\n    values.push(freq / tokens.length);\n  });\n  \n  return { indices, values };\n}\n\n// Dense vector search\nconst denseSearch = await $http.request({\n  method: 'POST',\n  url: `${qdrantUrl}/collections/${collectionName}/points/search`,\n  body: {\n    vector: {\n      name: 'chunk_embedding',\n      vector: queryEmbedding\n    },\n    filter: filters.business_area ? {\n      must: [{ key: 'business_area', match: { value: filters.business_area } }]\n    } : null,\n    limit: 100,\n    with_payload: true\n  },\n  headers: { 'Content-Type': 'application/json' }\n});\n\n// Sparse keyword search\nconst sparseVector = generateSparseVector(query);\nconst sparseSearch = await $http.request({\n  method: 'POST',\n  url: `${qdrantUrl}/collections/${collectionName}/points/search`,\n  body: {\n    vector: {\n      name: 'keyword_sparse',\n      vector: sparseVector\n    },\n    filter: filters.business_area ? {\n      must: [{ key: 'business_area', match: { value: filters.business_area } }]\n    } : null,\n    limit: 100,\n    with_payload: true\n  },\n  headers: { 'Content-Type': 'application/json' }\n});\n\n// Reciprocal Rank Fusion\nconst scores = new Map();\nconst documents = new Map();\n\n// Process dense results\ndenseSearch.result.forEach((result, rank) => {\n  const rrfScore = 1 / (k + rank + 1);\n  scores.set(result.id, (scores.get(result.id) || 0) + alpha * rrfScore);\n  documents.set(result.id, result);\n});\n\n// Process sparse results\nsparseSearch.result.forEach((result, rank) => {\n  const rrfScore = 1 / (k + rank + 1);\n  scores.set(result.id, (scores.get(result.id) || 0) + (1 - alpha) * rrfScore);\n  if (!documents.has(result.id)) {\n    documents.set(result.id, result);\n  }\n});\n\n// Sort by RRF score\nconst sortedResults = Array.from(scores.entries())\n  .sort((a, b) => b[1] - a[1])\n  .slice(0, limit);\n\n// Format final results\nconst results = sortedResults.map(([id, rrfScore]) => {\n  const doc = documents.get(id);\n  const denseRank = denseSearch.result.findIndex(r => r.id === id);\n  const sparseRank = sparseSearch.result.findIndex(r => r.id === id);\n  \n  return {\n    id: id,\n    content: doc.payload.content,\n    score: rrfScore,\n    strategy: 'hybrid_rrf',\n    metadata: {\n      document_id: doc.payload.document_id,\n      document_name: doc.payload.document_name,\n      section: doc.payload.section_title,\n      quality_score: doc.payload.quality_score,\n      has_context: doc.payload.has_context,\n      dense_rank: denseRank >= 0 ? denseRank + 1 : null,\n      sparse_rank: sparseRank >= 0 ? sparseRank + 1 : null,\n      rrf_components: {\n        dense_contribution: denseRank >= 0 ? alpha / (k + denseRank + 1) : 0,\n        sparse_contribution: sparseRank >= 0 ? (1 - alpha) / (k + sparseRank + 1) : 0\n      }\n    }\n  };\n});\n\nreturn {\n  results,\n  strategy: 'hybrid_rrf',\n  dense_results_count: denseSearch.result.length,\n  sparse_results_count: sparseSearch.result.length,\n  fusion_alpha: alpha,\n  execution_time_ms: Date.now() - $now.toMillis()\n};"
+      },
+      "id": "hybrid_search",
+      "name": "Hybrid Search RRF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 250]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Quality-Filtered Search for Compliance-Critical Queries\n\nconst qdrantUrl = $vars.QDRANT_URL || 'http://localhost:6333';\nconst collectionName = 'railway_documents_v4';\nconst queryEmbedding = $('embeddings').item.json.embedding;\nconst filters = $('query_analyzer').item.json.filters;\nconst minQuality = filters.min_quality || 85;\nconst limit = 10;\n\n// Build quality filter\nconst searchBody = {\n  vector: {\n    name: 'chunk_embedding',\n    vector: queryEmbedding\n  },\n  filter: {\n    must: [\n      { key: 'quality_score', range: { gte: minQuality } },\n      { key: 'has_context', match: { value: true } }\n    ]\n  },\n  limit: limit * 2, // Get more for additional filtering\n  with_payload: true\n};\n\n// Add business area filter if specified\nif (filters.business_area) {\n  searchBody.filter.must.push({\n    key: 'business_area',\n    match: { value: filters.business_area }\n  });\n}\n\n// Add compliance filter if relevant\nif (filters.compliance_relevant) {\n  searchBody.filter.must.push({\n    key: 'compliance_relevant',\n    match: { value: true }\n  });\n}\n\n// Add standard compliance filter if specified\nif (filters.standard_compliance) {\n  searchBody.filter.must.push({\n    key: 'standard_compliance',\n    match: { any: filters.standard_compliance }\n  });\n}\n\n// Execute search\nconst searchResults = await $http.request({\n  method: 'POST',\n  url: `${qdrantUrl}/collections/${collectionName}/points/search`,\n  body: searchBody,\n  headers: { 'Content-Type': 'application/json' }\n});\n\n// Additional quality validation\nconst validatedResults = searchResults.result.filter(r => {\n  const payload = r.payload;\n  \n  // Check individual quality metrics if available\n  if (payload.faithfulness && payload.faithfulness < 0.9) return false;\n  if (payload.relevancy && payload.relevancy < 0.85) return false;\n  if (payload.precision && payload.precision < 0.8) return false;\n  \n  // Check for required context\n  if (!payload.has_context) return false;\n  \n  // Ensure recent documents for compliance\n  if (payload.document_version && filters.require_latest) {\n    const docDate = new Date(payload.processing_timestamp);\n    const sixMonthsAgo = new Date();\n    sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);\n    if (docDate < sixMonthsAgo) return false;\n  }\n  \n  return true;\n});\n\n// Format results with quality emphasis\nconst results = validatedResults.slice(0, limit).map(r => ({\n  id: r.id,\n  content: r.payload.content,\n  score: r.score,\n  strategy: 'quality_filtered',\n  metadata: {\n    document_id: r.payload.document_id,\n    document_name: r.payload.document_name,\n    section: r.payload.section_title,\n    quality_score: r.payload.quality_score,\n    quality_metrics: {\n      faithfulness: r.payload.faithfulness || null,\n      relevancy: r.payload.relevancy || null,\n      precision: r.payload.precision || null,\n      recall: r.payload.recall || null\n    },\n    compliance_relevant: r.payload.compliance_relevant,\n    standard_compliance: r.payload.standard_compliance,\n    document_version: r.payload.document_version,\n    processing_timestamp: r.payload.processing_timestamp\n  },\n  quality_validation: {\n    passed: true,\n    min_quality_required: minQuality,\n    actual_quality: r.payload.quality_score\n  }\n}));\n\nreturn {\n  results,\n  strategy: 'quality_filtered',\n  total_found: searchResults.result.length,\n  after_validation: results.length,\n  min_quality_threshold: minQuality,\n  execution_time_ms: Date.now() - $now.toMillis()\n};"
+      },
+      "id": "quality_search",
+      "name": "Quality-Filtered Search",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1100, 400]
+    },
+    {
+      "parameters": {
+        "mode": "retrieve-as-tool",
+        "qdrantCollection": {
+          "__rl": true,
+          "value": "railway_documents_v4",
+          "mode": "name"
+        },
+        "topK": 10
+      },
+      "id": "qdrant_standard",
+      "name": "Qdrant Standard Search",
+      "type": "@n8n/n8n-nodes-langchain.vectorStoreQdrant",
+      "typeVersion": 1,
+      "position": [1100, 550],
+      "credentials": {
+        "qdrantApi": {
+          "id": "2",
+          "name": "Qdrant"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "id": "merge_results",
+      "name": "Merge Search Results",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1350, 300]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.query }}",
+        "hasOutputParser": false,
+        "options": {
+          "systemMessage": "You are a Railway Network Solutions Expert specializing in ÖBB infrastructure with access to a comprehensive Qdrant vector database.\n\n**Database Capabilities:**\n- Multi-vector search (chunk, parent, child, full document embeddings)\n- Quality-filtered retrieval (minimum score: 85%)\n- Hierarchical search (precise child search, comprehensive parent return)\n- Hybrid search with keyword matching and RRF\n- Railway-specific metadata (fleet types, EN standards, network components)\n\n**Search Strategy Used:** {{ $json.strategy }}\n\n**Key Information:**\n- Total Results: {{ $json.results.length }}\n- Search Quality: {{ $json.results[0].metadata.quality_score }}%\n- Context Available: {{ $json.results[0].metadata.has_context }}\n\n**Your Responsibilities:**\n1. Provide accurate technical information based on search results\n2. Always cite document references and quality scores\n3. Focus on ÖBB-specific configurations and EN standards compliance\n4. Highlight any compliance-critical information\n5. If information seems outdated, mention the document version\n\n**Response Format:**\n- Start with a direct answer to the query\n- Provide technical details with proper context\n- Include relevant document citations [Doc ID: xxx, Quality: xx%]\n- Mention any important caveats or limitations\n- Suggest related topics if applicable",
+          "maxIterations": 3,
+          "returnIntermediateSteps": true
+        }
+      },
+      "id": "ai_agent",
+      "name": "AI Agent with Qdrant",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1,
+      "position": [1550, 300],
+      "credentials": {
+        "openAiApi": {
+          "id": "1",
+          "name": "OpenAI"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Format the final response\nconst agentResponse = $input.first().json;\nconst searchResults = $('merge_results').item.json;\n\n// Extract key information\nconst response = {\n  answer: agentResponse.output || agentResponse.text,\n  search_metadata: {\n    strategy: searchResults.strategy,\n    total_results: searchResults.results?.length || 0,\n    execution_time_ms: searchResults.execution_time_ms,\n    query: $('query_analyzer').item.json.query,\n    business_area: $('query_analyzer').item.json.businessArea\n  },\n  citations: [],\n  quality_metrics: {\n    average_quality: 0,\n    min_quality: 100,\n    max_quality: 0\n  }\n};\n\n// Process citations from results\nif (searchResults.results && searchResults.results.length > 0) {\n  searchResults.results.slice(0, 5).forEach((result, idx) => {\n    response.citations.push({\n      rank: idx + 1,\n      document_id: result.metadata.document_id,\n      document_name: result.metadata.document_name,\n      section: result.metadata.section,\n      quality_score: result.metadata.quality_score,\n      relevance_score: result.score,\n      excerpt: result.content.substring(0, 200) + '...'\n    });\n    \n    // Update quality metrics\n    const quality = result.metadata.quality_score || 0;\n    response.quality_metrics.average_quality += quality;\n    response.quality_metrics.min_quality = Math.min(response.quality_metrics.min_quality, quality);\n    response.quality_metrics.max_quality = Math.max(response.quality_metrics.max_quality, quality);\n  });\n  \n  response.quality_metrics.average_quality /= response.citations.length;\n}\n\n// Add search strategy explanation\nconst strategyExplanations = {\n  hierarchical: 'Used hierarchical search to provide comprehensive context from parent documents while maintaining precision through child chunk matching.',\n  hybrid_rrf: 'Applied hybrid search combining semantic understanding with keyword matching using Reciprocal Rank Fusion for optimal relevance.',\n  quality_filtered: 'Enforced strict quality filtering to ensure only high-confidence, compliance-grade information was retrieved.',\n  standard: 'Performed standard vector similarity search across the document collection.'\n};\n\nresponse.search_metadata.strategy_explanation = strategyExplanations[searchResults.strategy] || 'Standard search applied.';\n\n// Add timestamp\nresponse.timestamp = new Date().toISOString();\nresponse.request_id = $('query_analyzer').item.json.requestId;\n\nreturn response;"
+      },
+      "id": "format_response",
+      "name": "Format Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1750, 300]
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "webhook_response",
+      "name": "Return Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [1950, 300]
+    }
+  ],
+  "connections": {
+    "webhook_trigger": {
+      "main": [
+        [
+          {
+            "node": "query_analyzer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "query_analyzer": {
+      "main": [
+        [
+          {
+            "node": "embeddings",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "strategy_router",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "strategy_router": {
+      "main": [
+        [
+          {
+            "node": "hierarchical_search",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "hybrid_search",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "quality_search",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "qdrant_standard",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "hierarchical_search": {
+      "main": [
+        [
+          {
+            "node": "merge_results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "hybrid_search": {
+      "main": [
+        [
+          {
+            "node": "merge_results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "quality_search": {
+      "main": [
+        [
+          {
+            "node": "merge_results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "qdrant_standard": {
+      "main": [
+        [
+          {
+            "node": "merge_results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "merge_results": {
+      "main": [
+        [
+          {
+            "node": "ai_agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ai_agent": {
+      "main": [
+        [
+          {
+            "node": "format_response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "format_response": {
+      "main": [
+        [
+          {
+            "node": "webhook_response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataSuccessExecution": "all",
+    "saveDataErrorExecution": "all",
+    "saveExecutionProgress": true,
+    "errorWorkflow": "",
+    "timezone": "Europe/Vienna"
+  },
+  "staticData": null,
+  "meta": {
+    "templateId": "railway-qdrant-v4",
+    "description": "Advanced Qdrant retrieval pipeline implementing v4.0 features for railway documentation",
+    "version": "4.0.0"
+  },
+  "tags": [
+    {
+      "id": 1,
+      "name": "Railway"
+    },
+    {
+      "id": 2,
+      "name": "Qdrant"
+    },
+    {
+      "id": 3,
+      "name": "AI"
+    },
+    {
+      "id": 4,
+      "name": "Advanced Retrieval"
+    }
+  ]
+}

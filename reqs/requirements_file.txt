@@ -1,0 +1,160 @@
+# requirements.txt - Core dependencies for Enhanced Document Processor v4.0
+
+# Natural Language Processing
+nltk>=3.8.1
+spacy>=3.5.0
+transformers>=4.35.0
+sentence-transformers>=2.2.2
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+openpyxl>=3.1.0  # For Excel support
+
+# Document Processing
+PyMuPDF>=1.23.0  # For PDF processing
+beautifulsoup4>=4.12.0  # For HTML processing
+Pillow>=10.0.0  # For image processing
+python-docx>=0.8.11  # For Word documents
+python-pptx>=0.6.21  # For PowerPoint
+
+# Vector Databases & Search
+qdrant-client>=1.7.0
+faiss-cpu>=1.7.4  # Or faiss-gpu for GPU support
+
+# Utilities
+tqdm>=4.66.0  # Progress bars
+python-dotenv>=1.0.0  # Environment variables
+pyyaml>=6.0  # YAML configuration
+
+# Quality & Testing
+pytest>=7.4.0
+pytest-cov>=4.1.0
+
+# Optional but recommended
+scikit-learn>=1.3.0  # For clustering and metrics
+matplotlib>=3.7.0  # For visualizations
+
+# -------------------
+# requirements-optional.txt - Advanced features
+
+# Distributed Processing
+ray[default]>=2.8.0
+dask>=2023.5.0  # Alternative to Ray
+
+# GPU Acceleration
+torch>=2.0.0
+torchvision>=0.15.0
+accelerate>=0.24.0
+
+# Advanced Document Processing
+docling>=1.0.0  # If available
+unstructured>=0.10.0  # Advanced parsing
+pdfplumber>=0.10.0  # Alternative PDF processing
+
+# Advanced NLP
+bertopic>=0.15.0  # Topic modeling
+keybert>=0.8.0  # Keyword extraction
+spacy-transformers>=1.3.0  # Transformer models for spaCy
+
+# Multimodal Processing
+opencv-python>=4.8.0
+pytesseract>=0.3.10  # OCR
+easyocr>=1.7.0  # Alternative OCR
+
+# Knowledge Graphs
+neo4j>=5.12.0
+networkx>=3.1  # Graph algorithms
+
+# Monitoring & Logging
+wandb>=0.15.0  # Experiment tracking
+tensorboard>=2.14.0
+loguru>=0.7.0  # Better logging
+
+# API & Web
+fastapi>=0.104.0  # For API deployment
+uvicorn>=0.24.0  # ASGI server
+redis>=5.0.0  # Caching
+
+# Cloud Storage
+boto3>=1.28.0  # AWS S3
+azure-storage-blob>=12.19.0  # Azure Blob
+google-cloud-storage>=2.10.0  # Google Cloud
+
+# -------------------
+# requirements-dev.txt - Development dependencies
+
+# Code Quality
+black>=23.11.0
+flake8>=6.1.0
+mypy>=1.7.0
+pylint>=3.0.0
+isort>=5.12.0
+
+# Documentation
+sphinx>=7.2.0
+sphinx-rtd-theme>=2.0.0
+mkdocs>=1.5.0
+mkdocs-material>=9.4.0
+
+# Testing
+pytest-asyncio>=0.21.0
+pytest-mock>=3.12.0
+pytest-benchmark>=4.0.0
+hypothesis>=6.92.0  # Property-based testing
+
+# Profiling
+memory-profiler>=0.61.0
+line-profiler>=4.1.0
+py-spy>=0.3.14
+
+# Jupyter
+jupyter>=1.0.0
+ipykernel>=6.26.0
+notebook>=7.0.0
+
+# -------------------
+# install.sh - Installation script
+
+#!/bin/bash
+
+echo "Installing Enhanced Document Processor v4.0..."
+
+# Install core dependencies
+pip install -r requirements.txt
+
+# Download spaCy model
+python -m spacy download en_core_web_sm
+
+# Download NLTK data
+python -c "
+import nltk
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('wordnet')
+nltk.download('averaged_perceptron_tagger')
+nltk.download('maxent_ne_chunker')
+nltk.download('words')
+"
+
+echo "Core installation complete!"
+
+# Optional: Install advanced features
+read -p "Install optional advanced features? (y/n) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]
+then
+    pip install -r requirements-optional.txt
+    echo "Advanced features installed!"
+fi
+
+# Optional: Install development tools
+read -p "Install development tools? (y/n) " -n 1 -r
+echo
+if [[ $REPLY =~ ^[Yy]$ ]]
+then
+    pip install -r requirements-dev.txt
+    echo "Development tools installed!"
+fi
+
+echo "Installation complete! Run 'python test_enhanced_processor.py' to verify."

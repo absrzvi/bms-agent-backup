@@ -48,6 +48,8 @@ Single-pod deployment on RunPod.io with direct binary installations (no Docker) 
 ### Phase 0 – Specification & Planning (`T000`)
 - Author the MVP specification (`.specify/specs/001-bms-agent/spec.md`) to capture user stories, functional/non-functional requirements, and constitution mapping.
 - Review constitution (§1–§4) to ensure acceptance criteria include standards compliance, JWT/webhook security, monitoring, and testing thresholds.
+- Establish Git flow branching strategy (feature/release branches) and document workflow expectations in `README.md`.
+- Create `docs/migrations.md` to track any manual data/schema changes executed during the MVP.
 
 ### Phase 1 – Environment & Qdrant (`T001–T005`)
 1. Provision project directories and persistent storage (`tasks.md` `T001`).

@@ -15,8 +15,9 @@ automation on RunPod.
 7. [API Usage](#api-usage)
 8. [Testing](#testing)
 9. [Deployment Automation](#deployment-automation)
-10. [Operations Playbook](#operations-playbook)
-11. [Additional Documentation](#additional-documentation)
+10. [Development Workflow](#development-workflow)
+11. [Operations Playbook](#operations-playbook)
+12. [Additional Documentation](#additional-documentation)
 
 ## Architecture Overview
 
@@ -142,6 +143,12 @@ ssh <user>@<runpod-ip> 'cd ~/bms-agent && ./scripts/manage_services.sh restart'
 ssh <user>@<runpod-ip> '~/bms-agent/scripts/health_check.sh'
 ```
 
+## Development Workflow
+
+- **Branching**: Follow Git flow (`feature/<name>`, `release/<version>`, `hotfix/<issue>`). Keep commits semantic (e.g., `feat(api): ...`).
+- **Migrations Log**: Record schema/data adjustments in `docs/migrations.md` with date, summary, and related task/PR references.
+- **Pull Requests**: Prefer small, reviewable PRs mapped to the tasks in `tasks.md`.
+
 ## Operations Playbook
 
 - **Health Checks**: `./scripts/health_check.sh`
@@ -155,4 +162,5 @@ ssh <user>@<runpod-ip> '~/bms-agent/scripts/health_check.sh'
 - `tasks.md`: Dependency-ordered task tracking for RunPod deployment.
 - `TESTING.md`: Detailed QA strategy, fixtures, and performance targets.
 - `reports/performance-baseline.md`: Latest latency benchmarks.
+- `docs/migrations.md`: Running log for manual schema or data changes.
 - `.github/workflows/ci-cd.yml`: CI/CD pipeline definition.

@@ -811,6 +811,8 @@ Steps:
 - Verify `README.md`, `TESTING.md`, and `DEPLOYMENT_CHECKLIST.md` contain latest commands, environment variables, and monitoring steps.
 - Ensure references to collection names, scripts, and endpoints match current implementation (`nomad_bms_documents`, `scripts/manage_services.sh`, `/metrics/uplink`).
 - Capture limitations (single RunPod pod, manual deployment placeholder) and roadmap links to `tasks.md`.
+- Document Git flow branching expectations (feature/release branches, semantic commit messages) in `README.md` or `docs/workflow.md`.
+- Create and maintain `docs/migrations.md` to log any manual schema or data changes executed during the MVP.
 Dependencies: T000, Plan update
 Output: Documentation reviewed, aligned with spec & plan
 

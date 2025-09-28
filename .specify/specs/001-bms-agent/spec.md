@@ -24,24 +24,26 @@
     - *Acceptance*: `scripts/evaluate_retrieval.py` reports accuracy ≥95 %.
 
 - **Security & Compliance**
-  - R3.1: Protect all API and webhook endpoints with JWT (RS256) plus internal API key as per constitution §3; tokens validated against `BMS_JWT_SECRET`.
+  - R3.1: Protect all API and webhook endpoints with JWT (RS256) plus internal API key as per constitution §3; tokens validated against the public key provided in `BMS_JWT_PUBLIC_KEY` (signing key managed by upstream identity service).
   - R3.2: Enforce rate limiting (default 60 requests/min per JWT subject) without external dependencies.
   - R3.3: Expose OpenAPI 3.0 documentation at `/openapi.json` with correct security schemes.
 
-- **Reliability & Monitoring**
   - R4.1: Provide `/health` and `/health/detailed` endpoints including Qdrant, Ollama, n8n, OpenWebUI status checks.
   - R4.2: Provide `/metrics/uplink` endpoint publishing latency, throughput, and recent errors for monitoring.
   - R4.3: Maintain 99.99 % availability target via documented monitoring + incident response playbook (`DEPLOYMENT_CHECKLIST.md`).
 
 - **Testing & Quality**
-  - R5.1: Maintain ≥80 % coverage for core logic; integrate CI (GitHub Actions) with security scans (Bandit, Safety) and performance benchmarks.
+  - R5.1: Maintain ≥80% coverage for core logic; integrate CI (GitHub Actions) with security scans (Bandit, Safety) and performance benchmarks.
   - R5.2: Include regression, performance, and security tests invoked by `pytest` markers.
+
+- **Workflow & Change Management**
+  - R6.1: Adopt Git flow branching for feature development (e.g., `feature/<name>`, `release/<version>`) with semantic commit messages.
+  - R6.2: Document database/data store changes through a migration log (`docs/migrations.md`) even when applying manual steps during the MVP.
 
 ## Acceptance Criteria Summary
 - Supported file types ingest successfully; invalid files rejected with specific errors.
 - Semantic search responds <500 ms average (performance test suite).
 - Retrieval evaluation script reports ≥95 % accuracy.
 - JWT + API key enforcement validated by automated tests; unauthorized access denied.
-- Rate limiting returns HTTP 429 when limit exceeded; covered by tests.
 - Monitoring endpoints return status objects and metrics; referenced in operations playbook.
 - CI pipeline passes tests, coverage, and security scans on main branch.

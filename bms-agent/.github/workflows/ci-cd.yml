@@ -1,0 +1,74 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  PYTHON_VERSION: '3.11'
+  BMS_API_KEY: ${{ secrets.BMS_API_KEY }}
+
+jobs:
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    
+    services:
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports:
+          - 6333:6333
+          - 6334:6334
+      ollama:
+        image: ollama/ollama:latest
+        ports:
+          - 11434:11434
+
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python ${{ env.PYTHON_VERSION }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ env.PYTHON_VERSION }}
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install -r requirements-test.txt
+        pip install pytest-cov
+    
+    - name: Start Ollama and pull model
+      run: |
+        ollama pull snowflake-arctic-embed2
+    
+    - name: Run tests with coverage
+      run: |
+        python -m pytest -v --cov=./ --cov-report=xml --cov-report=term-missing
+    
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        fail_ci_if_error: false
+  deploy:
+    name: Deploy to Production
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Deploy to production (placeholder)
+      env:
+        DEPLOY_KEY: ${{ secrets.DEPLOY_KEY }}
+      run: |
+        # Example RunPod automation (set RUNPOD_USER/RUNPOD_HOST as needed):
+        # rsync -avz --delete ./bms-agent ${RUNPOD_USER}@${RUNPOD_HOST}:~/bms-agent
+        # ssh ${RUNPOD_USER}@${RUNPOD_HOST} 'cd ~/bms-agent && ./scripts/manage_services.sh restart'
+        # ssh ${RUNPOD_USER}@${RUNPOD_HOST} '~/bms-agent/scripts/health_check.sh'
+        # ssh ${RUNPOD_USER}@${RUNPOD_HOST} '~/bms-agent/scripts/run_tests.sh'

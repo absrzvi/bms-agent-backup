@@ -20,10 +20,10 @@ Single-pod deployment on RunPod.io with direct binary installations (no Docker) 
 
 ### Core Services
 - **Qdrant v1.7.4**: Direct binary installation (no Docker)
-  - Multi-vector schema: chunk_embedding, parent_embedding (1024d for snowflake-arctic)
-  - Sparse vectors for BM25 keyword search
-  - On-disk storage for memory efficiency
-  - Collection: railway_documents_v4
+  - Multi-vector schema: `chunk_embedding`, `parent_embedding` (1024 d for snowflake-arctic)
+  - Sparse vectors for BM25 keyword search (optional, post-MVP)
+  - On-disk storage for memory efficiency and persistence under `~/persistent/qdrant_storage`
+  - Collection: `nomad_bms_documents`
 
 - **Ollama Models**:
   - Embeddings: snowflake-arctic-embed2 (1024 dimensions)
@@ -35,432 +35,176 @@ Single-pod deployment on RunPod.io with direct binary installations (no Docker) 
   - FastAPI on port 8000 for API endpoints
   - Persistent data in ~/persistent/bms_data/
 
-- **n8n Workflows**: 
+- **n8n Workflows**:
   - Slack bot integration (Priority 1)
-  - Document processing pipeline
-  - Webhook endpoints for ingestion
+  - Webhook endpoints protected with JWT per constitution §3
 
-- **OpenWebUI**: 
+- **OpenWebUI**:
   - Custom Qdrant tool integration (Priority 2)
   - Railway expertise prompts
 
 ## Implementation Plan
 
-### 1. Qdrant Installation & Setup (Day 1)
-```bash
-# Install Qdrant binary
-wget https://github.com/qdrant/qdrant/releases/download/v1.7.4/qdrant-x86_64-unknown-linux-gnu.tar.gz
-tar -xzf qdrant-x86_64-unknown-linux-gnu.tar.gz
-sudo mv qdrant /usr/local/bin/
+### Phase 0 – Specification & Planning (`T000`)
+- Author the MVP specification (`.specify/specs/001-bms-agent/spec.md`) to capture user stories, functional/non-functional requirements, and constitution mapping.
+- Review constitution (§1–§4) to ensure acceptance criteria include standards compliance, JWT/webhook security, monitoring, and testing thresholds.
 
-# Configure persistent storage
-mkdir -p ~/persistent/{qdrant_storage,qdrant_config,bms_data}
+### Phase 1 – Environment & Qdrant (`T001–T005`)
+1. Provision project directories and persistent storage (`tasks.md` `T001`).
+2. Create Python virtual environment and install dependencies as per `reqs/requirements.txt` (`T002`).
+3. Install Qdrant binary 1.7.4 locally (no Docker) and place logs under `~/persistent/logs` (`T003`).
+4. Generate `scripts/start_qdrant.sh` with optimized settings and start the service (`T004`).
+5. Initialize the `nomad_bms_documents` collection using `scripts/init_qdrant.py` with 1024-d vector schema and on-disk payloads (`T005`).
 
-# Start Qdrant with optimized settings
-nohup qdrant --storage-dir ~/persistent/qdrant_storage \
-             --on-disk-payload true \
-             --on-disk-vectors true \
-             --log-level info \
-             > ~/persistent/qdrant.log 2>&1 &
-### 2. Initialize Qdrant Schema
-```python
-# setup_qdrant.py
-from qdrant_client import QdrantClient, models
+### Phase 2 – Core Application (`T006`, `T007`, `T011`)
+1. Author `api/processor_wrapper.py` that wraps `EnhancedDocumentProcessor`, handles chunking, embeddings via Ollama, and upserts to Qdrant.
+2. Generate `scripts/test_processor.py` for end-to-end ingestion sanity checks.
+3. Create `api/main.py` (FastAPI) exposing:
+   - `POST /api/v1/documents/upload`
+   - `POST /api/v1/search/semantic`
+   - `GET /health` and `GET /health/detailed`
+   - Root endpoint summarising capabilities
+4. Ensure all endpoints load configuration from environment variables with reasonable defaults for local development.
 
-client = QdrantClient("localhost", port=6333)
+### Phase 3 – Integrations (`T008`, `T009`)
+- Build n8n Slack workflow (`n8n/workflows/slack_bot.json`) to call the FastAPI search endpoint and format responses.
+- Create OpenWebUI tool (`~/.openwebui/tools/bms_search.py`) to query the same Qdrant collection via HTTP.
 
-# Create collection with 1024d vectors for snowflake-arctic-embed2
-client.create_collection(
-    collection_name="railway_docs",
-    vectors_config={
-        "chunk_embedding": models.VectorParams(
-            size=1024,  # snowflake-arctic-embed2 dimension
-            distance=models.Distance.COSINE,
-            on_disk=True
-        ),
-        "parent_embedding": models.VectorParams(
-            size=1024,
-            distance=models.Distance.COSINE,
-            on_disk=True
-        )
-    },
-    sparse_vectors_config={
-        "keyword": models.SparseVectorParams()
-    }
-)
+### Phase 4 – Security & Compliance (`T014`)
+1. Implement `api/security.py` (or equivalent module) providing:
+   - JWT validation using RS256 (`BMS_JWT_PUBLIC_KEY` / `BMS_JWT_ALGORITHM`).
+   - API key fallback for internal services (`BMS_API_KEY`).
+   - Request-scoped rate limiting (60 req/min per JWT subject) using lightweight in-memory token bucket (no external dependencies).
+   - Security headers middleware (CSP, HSTS optional, X-Frame-Options, X-Content-Type-Options).
+2. Wire security dependencies into FastAPI routes and ensure 403/429 handling is covered by tests.
+3. Update `docs/security-notes.md` to track remaining items and confirmation checks.
 
-# Create payload indexes
-client.create_payload_index(
-    collection_name="railway_docs",
-    field_name="fleet_type",
-    field_schema="keyword"
-)
+### Phase 5 – Documentation & CI/CD (`T015`, `T016`)
+- Maintain `README.md`, `TESTING.md`, `DEPLOYMENT_CHECKLIST.md`, and `reports/performance-baseline.md` with instructions reflecting current architecture.
+- Configure GitHub Actions (`.github/workflows/ci-cd.yml`) to run tests, coverage, security scans (Bandit, Safety), and provide deployment placeholders for RunPod automation.
+- Document required secrets (`BMS_API_KEY`, `DEPLOY_KEY`, optional `CODECOV_TOKEN`, `SAFETY_API_KEY`, future `RUNPOD_USER/HOST`).
 
-client.create_payload_index(
-    collection_name="railway_docs",
-    field_name="standard_compliance",
-    field_schema="keyword"
-)
-```
+### Phase 6 – Testing & Evaluation (`T010`, `T017`, `T019`)
+1. Use `scripts/run_tests.sh` to orchestrate integration tests (processor, API smoke checks).
+2. Expand `tests/test_basic.py`, `tests/performance/test_performance.py` for regression and latency targets.
+3. Create evaluation dataset (`data/evaluation/ground_truth.jsonl`) and `scripts/evaluate_retrieval.py` to compute top-5 accuracy ≥95 %.
+4. Integrate evaluation into CI (report accuracy figure and fail if below threshold).
 
-### 3. Document Processor Setup (Day 1-2)
-```bash
-# Set up Python environment
-cd ~
-git clone https://github.com/absrzvi/bms-agent.git
-cd bms-agent
-python3 -m venv venv
-source venv/bin/activate
-
-# Install core dependencies
-pip install qdrant-client==1.7.0 fastapi uvicorn python-multipart
-pip install nltk beautifulsoup4 pandas openpyxl
-
-# Download NLTK data
-python -m nltk.downloader punkt stopwords wordnet
-
-# Create minimal processor
-cat > mvp_processor.py << 'EOL'
-import os
-from typing import List, Dict, Any
-from qdrant_client import QdrantClient
-import httpx
-import json
-
-class MVPProcessor:
-    def __init__(self):
-        self.qdrant = QdrantClient("localhost", port=6333)
-        self.ollama_url = "http://localhost:11434/api/embeddings"
-        
-    async def get_embedding(self, text: str) -> List[float]:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                self.ollama_url,
-                json={"model": "snowflake-arctic-embed2", "prompt": text}
-            )
-            return response.json()["embedding"]
-    
-    async def process_document(self, file_path: str):
-        # TODO: Implement document processing logic
-        pass
-
-# Initialize processor
-processor = MVPProcessor()
-EOL
-
-### 4. Test Ingestion (Day 2)
-```python
-# test_ingestion.py
-import asyncio
-from mvp_processor import processor
-
-async def test_ingestion():
-    test_doc = {
-        "text": "Sample railway configuration for CCU R4600-2Ax.",
-        "metadata": {
-            "fleet_type": "Railjet",
-            "standard_compliance": "EN50155",
-            "source": "test_document.pdf"
-        }
-    }
-    
-    # Generate embeddings
-    embedding = await processor.get_embedding(test_doc["text"])
-    
-    # Store in Qdrant
-    points = [{
-        "id": "test_doc_1",
-        "vector": {"chunk_embedding": embedding},
-        "payload": {
-            "text": test_doc["text"],
-            **test_doc["metadata"]
-        }
-    }]
-    
-    await processor.qdrant.upsert(
-        collection_name="railway_docs",
-        points=points
-    )
-    print("Test document ingested successfully!")
-
-if __name__ == "__main__":
-    asyncio.run(test_ingestion())
-```
-
-### 5. Slack Bot Integration (Day 3)
-
-1. **n8n Workflow Setup**
-   - Trigger: Slack Message
-   - Action: HTTP Request to Ollama for embeddings
-   - Search: Qdrant vector search
-   - Generate: Ollama mistral-nemo:12b response
-   - Reply: Post to Slack thread
-
-2. **Required n8n Nodes**:
-   - Slack Trigger
-   - HTTP Request (Ollama embeddings)
-   - Function (Qdrant query builder)
-   - HTTP Request (Qdrant search)
-   - HTTP Request (Ollama completion)
-   - Slack Send Message
-
-3. **Environment Variables**:
-   ```
-   OLLAMA_URL=http://localhost:11434
-   QDRANT_URL=http://localhost:6333
-   SLACK_BOT_TOKEN=xoxb-your-token
-   ```
-
-### 6. OpenWebUI Integration (Day 4)
-
-1. **Create Tool Script** (`~/.openwebui/tools/qdrant_search.py`):
-```python
-def search_railway_docs(query: str, limit: int = 5) -> str:
-    """Search railway documentation using Qdrant."""
-    from qdrant_client import QdrantClient
-    
-    client = QdrantClient("localhost", port=6333)
-    
-    # Get query embedding from Ollama
-    embedding = requests.post(
-        "http://localhost:11434/api/embeddings",
-        json={"model": "snowflake-arctic-embed2", "prompt": query}
-    ).json()["embedding"]
-    
-    # Search Qdrant
-    results = client.search(
-        collection_name="railway_docs",
-        query_vector=("chunk_embedding", embedding),
-        limit=limit,
-        with_vectors=False,
-        with_payload=True
-    )
-    
-    # Format results
-    return "\n\n".join(
-        f"Source: {r.payload.get('source', 'Unknown')}\n"
-        f"Relevance: {r.score:.2f}\n"
-        f"Content: {r.payload.get('text', '')[:500]}..."
-        for r in results
-    )
-```
-
-2. **Register Tool** in OpenWebUI configuration:
-```yaml
-tools:
-  - name: search_railway_docs
-    description: Search railway documentation
-    parameters:
-      type: object
-      properties:
-        query:
-          type: string
-          description: Search query
-        limit:
-          type: integer
-          description: Maximum results to return
-          default: 5
-      required: ["query"]
-```
+### Phase 7 – Operations & Monitoring (`T012`, `T013`, `T018`)
+1. Manage lifecycle via `scripts/manage_services.sh` (start/stop/status) and `scripts/health_check.sh`.
+2. Implement `/metrics/uplink` endpoint exposing latency histogram, request counts, and error totals for scraping (curl-friendly JSON until formal Prometheus integration).
+3. Document monitoring routine, log rotation, and incident response in `DEPLOYMENT_CHECKLIST.md`.
 
 ## File Structure
 ```
 ~
 ├── persistent/
-│   ├── qdrant_storage/        # Qdrant data
-│   ├── bms_data/              # Processed documents
-│   │   ├── uploads/           # User uploads
-│   │   └── processed/         # Processed chunks
-│   └── logs/                  # Application logs
+│   ├── qdrant_storage/            # Qdrant data files
+│   ├── bms_data/
+│   │   ├── uploads/               # Source documents
+│   │   ├── processed/             # Processed artifacts (optional cache)
+│   │   └── evaluations/           # Ground-truth/reference material
+│   └── logs/
+│       ├── qdrant.log
+│       └── api.log
 │
-└── bms-agent/                 # Git repository
-    ├── venv/                  # Python virtual env
-    ├── setup_qdrant.py        # Schema setup
-    ├── mvp_processor.py       # Core processor
-    ├── api/                   # FastAPI app
-    │   ├── main.py
-    │   └── endpoints/
-    └── scripts/
-        ├── start_services.sh  # Service manager
-        └── backup.sh          # Backup utility
+└── bms-agent/
+    ├── api/
+    │   ├── main.py                # FastAPI entry point
+    │   ├── processor_wrapper.py
+    │   └── security.py            # JWT, rate limiting, headers
+    ├── n8n/workflows/slack_bot.json
+    ├── scripts/
+    │   ├── start_qdrant.sh
+    │   ├── init_qdrant.py
+    │   ├── manage_services.sh
+    │   ├── run_tests.sh
+    │   ├── health_check.sh
+    │   └── evaluate_retrieval.py
+    ├── tests/
+    │   ├── test_basic.py
+    │   ├── performance/test_performance.py
+    │   └── security/ (optional future expansion)
+    ├── reports/performance-baseline.md
+    ├── README.md
+    ├── TESTING.md
+    └── requirements-*.txt
 ```
+
 ## Service Management
 
-### Startup Script (`start_services.sh`)
-```bash
-#!/bin/bash
+- Primary orchestration via `scripts/manage_services.sh` (`start`, `stop`, `status`, `restart`).
+- Health verification with `scripts/health_check.sh` covering Qdrant, API, Ollama, n8n, OpenWebUI, and embedding availability.
+- API served with `uvicorn api.main:app --host 0.0.0.0 --port 8000` (managed inside scripts).
 
-# Qdrant
-if ! pgrep -x "qdrant" > /dev/null; then
-    nohup qdrant --storage-dir ~/persistent/qdrant_storage \
-                --on-disk-payload true \
-                --on-disk-vectors true \
-                > ~/persistent/logs/qdrant.log 2>&1 &
-    echo "Started Qdrant"
-fi
-
-# API Server
-cd ~/bms-agent
-source venv/bin/activate
-if ! pgrep -f "uvicorn" > /dev/null; then
-    nohup uvicorn api.main:app \
-                --host 0.0.0.0 \
-                --port 8000 \
-                > ~/persistent/logs/api.log 2>&1 &
-    echo "Started API server"
-fi
-
-echo "All services started"
-```
-## Configuration (`.env`)
+## Configuration (`.env` or `config/env.sh`)
 ```env
-# Core
+# Core paths & logging
 PERSISTENT_PATH=~/persistent
 LOG_LEVEL=INFO
 
+# Security
+BMS_API_KEY=change-me
+BMS_JWT_PUBLIC_KEY="-----BEGIN PUBLIC KEY-----..."
+BMS_JWT_ALGORITHM=RS256
+RATE_LIMIT_PER_MIN=60
+
 # Qdrant
-QDRANT_URL=localhost
+QDRANT_HOST=localhost
 QDRANT_PORT=6333
-QDRANT_COLLECTION=railway_docs
+QDRANT_COLLECTION=nomad_bms_documents
 
 # Ollama
 OLLAMA_URL=http://localhost:11434
 EMBEDDING_MODEL=snowflake-arctic-embed2
 GENERATION_MODEL=mistral-nemo:12b-instruct
 
-# Slack
-SLACK_BOT_TOKEN=your-token-here
-SLACK_SIGNING_SECRET=your-secret-here
-
-# OpenWebUI
+# Integrations
+SLACK_BOT_TOKEN=your-token
+SLACK_SIGNING_SECRET=your-secret
 OPENWEBUI_URL=http://localhost:8080
+N8N_WEBHOOK_JWT=...
 ```
-## API Endpoints
 
-### Document Ingestion
-- `POST /api/v1/documents` - Upload and process document
-- `POST /api/v1/documents/batch` - Process multiple documents
-- `GET /api/v1/documents/{doc_id}` - Get document status
+## API Endpoints (MVP)
 
-### Search
-- `POST /api/v1/search/semantic` - Vector similarity search
-- `POST /api/v1/search/hybrid` - Combined vector + keyword search
-- `POST /api/v1/search/keyword` - BM25 keyword search
+- `POST /api/v1/documents/upload` – Upload and process a single document (≤100 MB).
+- `POST /api/v1/search/semantic` – Semantic vector search (JWT + API key protected, rate limited).
+- `GET /health` – Lightweight service heartbeat.
+- `GET /health/detailed` – Extended health report (Qdrant collection state, Ollama status, n8n/OpenWebUI reachability).
+- `GET /metrics/uplink` – Operational metrics (latency, throughput, error counters) in JSON.
+- `GET /` – API overview and endpoint discovery.
 
-### System
-- `GET /health` - Service health check
-- `GET /metrics` - Performance metrics
-- `GET /version` - API version info
-Testing & Validation
+## Testing & Validation Workflow
 
-Service Health: Verify all services running
-Ingestion Test: Process sample railway doc
-Retrieval Test: Query for CCU configurations
-Slack Bot Test: Ask about VLAN settings
-OpenWebUI Test: Full conversation about railway specs
+1. `./scripts/run_tests.sh` – Ensures Qdrant running, processor ingestion works, API responsive.
+2. `pytest -v --cov=./ --cov-report=term-missing` – Unit/integration coverage (≥80 %).
+3. `pytest tests/performance/test_performance.py -m performance` – Validates latency targets (<500 ms average, <1 s p95).
+4. `python scripts/evaluate_retrieval.py` – Computes top-5 accuracy vs `data/evaluation/ground_truth.jsonl` (≥95 %).
+5. Manual smoke tests via Slack bot and OpenWebUI to ensure integrations operate with current API key/JWT configuration.
 
-Performance Targets (MVP)
+## Performance & Reliability Targets
 
-Document processing: 10 docs/minute
-Query latency: < 200ms
-Concurrent users: 10
-Storage efficiency: < 100GB for 10k documents
-Memory usage: < 24GB total
+- Document processing throughput: ≥10 documents/minute (using EnhancedDocumentProcessor).
+- Semantic query latency: <500 ms average, <1 s p95.
+- Availability: 99.99 % (documented monitoring + incident response, failover guidance TBD).
+- Storage efficiency: ≤100 GB for 10 k documents using on-disk vectors/payloads.
 
-Backup Strategy
-bash# Daily cron job
-0 2 * * * tar -czf ~/persistent/backups/bms_$(date +%Y%m%d).tar.gz \
-  ~/persistent/qdrant_storage ~/persistent/bms_data
-Monitoring
+## Monitoring & Backup Strategy
 
-Simple bash script checking service health every 5 minutes
-Log rotation for application logs
-Resource usage tracking (CPU, memory, disk)
-No external monitoring tools needed
+- Health script scheduled via cron/systemd on RunPod to log status snapshots.
+- Log rotation for `~/persistent/logs/*.log` using `logrotate` or custom cron.
+- Daily backups: `tar -czf ~/persistent/backups/bms_$(date +%Y%m%d).tar.gz ~/persistent/qdrant_storage ~/persistent/bms_data` (automate in cron after initial validation).
+- Consider Prometheus/Grafana integration post-MVP; maintain placeholders in `/metrics/uplink` response for future scrape format.
 
-Success Criteria
+## Success Criteria & Priority Order
 
-Qdrant running with schema initialized
-Test document successfully ingested and retrieved
-Slack bot responding to railway queries
-OpenWebUI using Qdrant knowledge base
-All services survive pod restart
-Data persists in ~/persistent/
+1. Qdrant installed, collection initialized (`nomad_bms_documents`).
+2. Documents ingest via API and are searchable with relevant top results.
+3. Slack workflow returns contextual answers; OpenWebUI tool surfaces matching chunks.
+4. JWT + API key security enforced; rate limiting verified.
+5. Retrieval accuracy evaluation ≥95 %; performance benchmarks within target.
+6. Monitoring scripts and health endpoints provide actionable status.
+7. CI pipeline green (tests, coverage, security scans) on main branch.
 
-Priority Order
-
-Qdrant installation and schema setup
-Document processor with test ingestion
-n8n Slack bot workflow
-OpenWebUI Qdrant tool
-Production optimizations
-
-This plan focuses on getting a working MVP without Docker, using direct installations on the Runpod pod with persistent storage.
-
-This `/plan` command is ready to paste into Windsurf. It's comprehensive yet focused on your specific requirements: single pod deployment, no Docker, integration with existing services, and the priority order you specified (Qdrant → Document processor → Slack bot → OpenWebUI).RetryAwhich file should i copy this in and how do i update the /plan command to use the file for inputEditPlotted file storage and command referencing strategy.The user wants to know how to save this large plan and reference it in Windsurf, similar to what I explained earlier. They need to:
-
-Create a file to store the plan
-Reference it with a shorter /plan command
-
-I should provide clear instructions on where to save it and how to reference it.Where to Save the Plan
-Option 1: Save in the .specify folder (Recommended)
-bash# Create the file in your project's .specify folder
-cd ~/bms-agent
-mkdir -p .specify/plans
-nano .specify/plans/runpod-deployment-plan.md
-
-# Or create directly:
-cat > .specify/plans/runpod-deployment-plan.md << 'EOF'
-[Paste the entire plan content here]
-EOF
-Option 2: Save in the current feature spec folder
-bash# If Windsurf already created a feature folder (like 001-bms-enhancement)
-cd ~/bms-agent/.specify/specs/001-bms-enhancement/
-nano deployment-plan.md
-How to Reference in Windsurf
-After saving the file, use this shortened /plan command in Windsurf:
-Short Reference Command
-/plan
-
-Implement the comprehensive technical plan detailed in: .specify/plans/runpod-deployment-plan.md
-
-Key points:
-- Single Runpod.io pod deployment (no Docker)
-- Integrate with existing Ollama, n8n, OpenWebUI
-- Install Qdrant directly via binary
-- Use snowflake-arctic-embed2 for embeddings
-- Priority: Qdrant → Document processor → Slack bot → OpenWebUI
-- All data in ~/persistent/ directory
-Alternative: If Windsurf needs more context
-/plan
-
-Read and implement the deployment plan from: .specify/plans/runpod-deployment-plan.md
-
-Summary: Deploy BMS Agent on Runpod.io without containerization, installing Qdrant directly and integrating with existing services (Ollama with snowflake-arctic-embed2, n8n, OpenWebUI). Focus on MVP with Slack bot first, then OpenWebUI integration.
-Quick Setup Commands
-bash# 1. Save the plan to file
-cd ~/bms-agent
-mkdir -p .specify/plans
-cat > .specify/plans/runpod-deployment-plan.md << 'EOF'
-[Paste your complete plan here]
-EOF
-
-# 2. Verify file was created
-ls -la .specify/plans/
-cat .specify/plans/runpod-deployment-plan.md | head -20
-
-# 3. Go to Windsurf and use the short reference command
-Git Integration
-Don't forget to commit this plan to your repository:
-bashcd ~/bms-agent
-git add .specify/plans/runpod-deployment-plan.md
-git commit -m "Add Runpod deployment plan for MVP"
-git push origin main
-This way, the plan is:
-
-Version controlled in your repo
-Available for Windsurf to reference
-Documented for team members
-Easy to update as needed
-
-Would you like me to provide the exact commands to run first, or help you with creating the file?RetryClaude can make mistakes. Please double-check responses.
+Priority sequence aligns with tasks: Setup (T000–T005) → Core (T006–T011) → Integrations (T008–T009) → Security (T014) → Documentation & CI (T015–T016) → Testing & Evaluation (T010, T017, T019) → Operations (T012, T013, T018).

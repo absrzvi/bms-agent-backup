@@ -177,21 +177,26 @@ class ContextualRetrievalEngine:
         self.config = config
         self.context_cache = {}
         
-    def generate_chunk_context(self, 
-                              document: Dict[str, Any], 
-                              chunk: str, 
+    def generate_chunk_context(self,
+                              document: Dict[str, Any],
+                              chunk: str,
                               chunk_index: int,
-                              total_chunks: int) -> str:
+                              total_chunks: int,
+                              all_chunks: List[Dict] = None) -> str:
         """Generate context for a chunk using document understanding"""
-        
+
         # Extract document context
         doc_title = document.get('title', 'Unknown Document')
         doc_type = document.get('type', 'general')
         doc_summary = document.get('summary', '')
-        
+
         # Get surrounding chunks for context
-        prev_chunk = document.get('chunks', [])[chunk_index - 1]['content'] if chunk_index > 0 else ""
-        next_chunk = document.get('chunks', [])[chunk_index + 1]['content'] if chunk_index < total_chunks - 1 else ""
+        if all_chunks:
+            prev_chunk = all_chunks[chunk_index - 1].get('content', '') if chunk_index > 0 else ""
+            next_chunk = all_chunks[chunk_index + 1].get('content', '') if chunk_index < total_chunks - 1 else ""
+        else:
+            prev_chunk = ""
+            next_chunk = ""
         
         # Generate contextual description
         context_parts = []
@@ -1547,10 +1552,11 @@ class EnhancedDocumentProcessor:
         
         for i, chunk in enumerate(chunks):
             enhanced_content = self.contextual_engine.generate_chunk_context(
-                document, 
+                document,
                 chunk.get('content', ''),
                 i,
-                total_chunks
+                total_chunks,
+                chunks  # Pass all chunks for context
             )
             
             chunk['content'] = enhanced_content
@@ -1577,48 +1583,49 @@ def setup_distributed_processing():
         logger.warning("Ray not available for distributed processing")
         return False
 
-@ray.remote
-class DistributedDocumentProcessor:
-    """Ray actor for distributed document processing"""
-    
-    def __init__(self, config: ProcessingConfig):
-        self.processor = EnhancedDocumentProcessor(config)
-    
-    def process(self, file_path: str) -> Dict[str, Any]:
-        return self.processor.process_document(file_path)
+if RAY_AVAILABLE:
+    @ray.remote
+    class DistributedDocumentProcessor:
+        """Ray actor for distributed document processing"""
 
-def process_directory_distributed(
-    directory: Path,
-    config: ProcessingConfig,
-    pattern: str = "*.pdf",
-    num_workers: int = 4
-) -> List[Dict[str, Any]]:
-    """Process directory using distributed processing"""
-    
-    if not setup_distributed_processing():
-        logger.warning("Falling back to sequential processing")
-        processor = EnhancedDocumentProcessor(config)
-        results = []
-        for file_path in directory.glob(pattern):
-            results.append(processor.process_document(file_path))
+        def __init__(self, config: ProcessingConfig):
+            self.processor = EnhancedDocumentProcessor(config)
+
+        def process(self, file_path: str) -> Dict[str, Any]:
+            return self.processor.process_document(file_path)
+
+    def process_directory_distributed(
+        directory: Path,
+        config: ProcessingConfig,
+        pattern: str = "*.pdf",
+        num_workers: int = 4
+    ) -> List[Dict[str, Any]]:
+        """Process directory using distributed processing"""
+
+        if not setup_distributed_processing():
+            logger.warning("Falling back to sequential processing")
+            processor = EnhancedDocumentProcessor(config)
+            results = []
+            for file_path in directory.glob(pattern):
+                results.append(processor.process_document(file_path))
+            return results
+
+        # Create Ray actors
+        actors = [DistributedDocumentProcessor.remote(config) for _ in range(num_workers)]
+
+        # Get files to process
+        files = list(directory.glob(pattern))
+
+        # Distribute work
+        futures = []
+        for i, file_path in enumerate(files):
+            actor = actors[i % num_workers]
+            futures.append(actor.process.remote(str(file_path)))
+
+        # Collect results
+        results = ray.get(futures)
+
         return results
-    
-    # Create Ray actors
-    actors = [DistributedDocumentProcessor.remote(config) for _ in range(num_workers)]
-    
-    # Get files to process
-    files = list(directory.glob(pattern))
-    
-    # Distribute work
-    futures = []
-    for i, file_path in enumerate(files):
-        actor = actors[i % num_workers]
-        futures.append(actor.process.remote(str(file_path)))
-    
-    # Collect results
-    results = ray.get(futures)
-    
-    return results
 
 # =============================
 # CLI Interface

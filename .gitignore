@@ -3,6 +3,9 @@ qdrant
 qdrant.tar.gz
 *.tar.gz
 
+# GitHub CLI binaries
+gh_*/
+
 # Qdrant data directory
 /qdrant-data/
 /storage/

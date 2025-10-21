@@ -201,6 +201,16 @@ class QdrantSchemaV4:
             ("configuration_type", PayloadSchemaType.KEYWORD),
         ]
         
+        # Chapter/Sub-chapter indexes
+        chapter_indexes = [
+            ("chapter_number", PayloadSchemaType.KEYWORD),
+            ("chapter_title", PayloadSchemaType.KEYWORD),
+            ("chapter_level", PayloadSchemaType.INTEGER),
+            ("chapter_path", PayloadSchemaType.KEYWORD),
+            ("sub_chapter", PayloadSchemaType.KEYWORD),
+            ("parent_chapter", PayloadSchemaType.KEYWORD),
+        ]
+
         # Search optimization indexes
         search_indexes = [
             ("search_type", PayloadSchemaType.KEYWORD),  # vector, hybrid, keyword
@@ -208,7 +218,7 @@ class QdrantSchemaV4:
             ("is_parent", PayloadSchemaType.BOOL),
             ("is_child", PayloadSchemaType.BOOL),
         ]
-        
+
         # Text search indexes for hybrid search
         text_indexes = [
             ("content", PayloadSchemaType.TEXT),  # Full-text search
@@ -218,9 +228,10 @@ class QdrantSchemaV4:
         
         # Create all indexes
         all_indexes = (
-            document_indexes + 
-            chunk_indexes + 
-            railway_indexes + 
+            document_indexes +
+            chunk_indexes +
+            railway_indexes +
+            chapter_indexes +
             search_indexes
         )
         
@@ -346,7 +357,21 @@ class QdrantSchemaV4:
             "topics": json.dumps(chunk.get('topics', [])),
             "relationships": json.dumps(chunk.get('relationships', [])),
         }
-        
+
+        # Add chapter information if present
+        if 'chapter_info' in chunk:
+            chapter_info = chunk['chapter_info']
+            payload.update({
+                "chapter_number": chapter_info.get('chapter_number', ''),
+                "chapter_title": chapter_info.get('chapter_title', ''),
+                "chapter_level": chapter_info.get('chapter_level', 0),
+                "chapter_path": chapter_info.get('chapter_path', ''),
+                "sub_chapter": chapter_info.get('sub_chapter', ''),
+                "sub_chapter_number": chapter_info.get('sub_chapter_number', ''),
+                "parent_chapter": chapter_info.get('parent_chapter', ''),
+                "position_in_chapter": chapter_info.get('position_in_chapter', 0),
+            })
+
         # Add railway-specific metadata if present
         if 'railway_metadata' in document_metadata:
             railway = document_metadata['railway_metadata'].get('railway_specific', {})
@@ -379,14 +404,16 @@ class QdrantSchemaV4:
 
         return point
     
-    def _generate_chunk_id(self, 
-                          document_id: str, 
-                          chunk_index: int, 
+    def _generate_chunk_id(self,
+                          document_id: str,
+                          chunk_index: int,
                           content: str) -> str:
-        """Generate unique chunk ID"""
-        # Combine document ID, chunk index, and content hash
-        content_hash = hashlib.md5(content.encode()).hexdigest()[:8]
-        return f"{document_id}_{chunk_index}_{content_hash}"
+        """Generate unique chunk ID as UUID"""
+        # Create a deterministic UUID from document_id, chunk_index, and content hash
+        unique_string = f"{document_id}_{chunk_index}_{content[:100]}"
+        # Generate UUID5 (deterministic) from the unique string
+        import uuid
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, unique_string))
     
     def _create_sparse_vector(self, term_frequencies: Dict[str, float]) -> SparseVector:
         """Create sparse vector from term frequencies for BM25"""

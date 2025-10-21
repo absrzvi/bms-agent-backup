@@ -14,10 +14,10 @@ from uuid import uuid4
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
-    Distance, VectorParams, PointStruct, 
+    Distance, VectorParams, PointStruct,
     CollectionInfo, OptimizersConfig, HnswConfigDiff,
-    QuantizationConfig, ScalarQuantization, ScalarType,
-    PayloadSchemaType, PayloadIndexParams, TextIndexParams,
+    QuantizationConfig, ScalarQuantization, ScalarQuantizationConfig, ScalarType,
+    PayloadSchemaType, TextIndexParams,
     TokenizerType, Filter, FieldCondition, Range, MatchValue,
     SearchRequest, NamedVector, SparseVector, SparseVectorParams
 )
@@ -143,13 +143,7 @@ class QdrantSchemaV4:
             # Sharding for scalability
             shard_number=self.config.shard_count,
             replication_factor=self.config.replication_factor,
-            
-            # Optimization settings
-            optimizers_config=OptimizersConfig(
-                indexing_threshold=20000,
-                max_segment_size=200000
-            ),
-            
+
             # HNSW configuration
             hnsw_config=HnswConfigDiff(
                 m=self.config.hnsw_m,
@@ -231,7 +225,7 @@ class QdrantSchemaV4:
         )
         
         for field_name, field_type in all_indexes:
-            self.client.create_field_index(
+            self.client.create_payload_index(
                 collection_name=collection_name,
                 field_name=field_name,
                 field_schema=field_type
@@ -240,7 +234,7 @@ class QdrantSchemaV4:
         
         # Create text indexes with special parameters
         for field_name, _ in text_indexes:
-            self.client.create_field_index(
+            self.client.create_payload_index(
                 collection_name=collection_name,
                 field_name=field_name,
                 field_schema=TextIndexParams(
@@ -287,13 +281,12 @@ class QdrantSchemaV4:
         if 'full_doc_embedding' in chunk:
             vectors['full_doc_embedding'] = chunk['full_doc_embedding']
         
-        # Prepare sparse vector for hybrid search
-        sparse_vectors = {}
+        # Prepare sparse vector for hybrid search (add to vectors dict)
         if 'term_frequencies' in chunk:
-            sparse_vectors['keyword_sparse'] = self._create_sparse_vector(
+            vectors['keyword_sparse'] = self._create_sparse_vector(
                 chunk['term_frequencies']
             )
-        
+
         # Comprehensive payload
         payload = {
             # Document metadata
@@ -383,11 +376,7 @@ class QdrantSchemaV4:
             vector=vectors,
             payload=payload
         )
-        
-        # Add sparse vectors if available
-        if sparse_vectors:
-            point.sparse_vectors = sparse_vectors
-        
+
         return point
     
     def _generate_chunk_id(self, 

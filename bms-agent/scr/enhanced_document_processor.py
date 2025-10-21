@@ -1955,7 +1955,42 @@ class EnhancedDocumentProcessor:
                 return text
             else:
                 raise ImportError("PyMuPDF required for PDF processing")
-        
+
+        elif extension in ['.docx', '.doc']:
+            try:
+                from docx import Document
+                doc = Document(file_path)
+                text = []
+                for paragraph in doc.paragraphs:
+                    text.append(paragraph.text)
+                # Also extract from tables
+                for table in doc.tables:
+                    for row in table.rows:
+                        for cell in row.cells:
+                            text.append(cell.text)
+                return '\n'.join(text)
+            except ImportError:
+                raise ImportError("python-docx required for DOCX/DOC processing")
+            except Exception as e:
+                logger.error(f"Error reading DOCX file: {e}")
+                raise
+
+        elif extension in ['.pptx', '.ppt']:
+            try:
+                from pptx import Presentation
+                prs = Presentation(file_path)
+                text = []
+                for slide in prs.slides:
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text"):
+                            text.append(shape.text)
+                return '\n'.join(text)
+            except ImportError:
+                raise ImportError("python-pptx required for PPTX/PPT processing")
+            except Exception as e:
+                logger.error(f"Error reading PPTX file: {e}")
+                raise
+
         elif extension in ['.csv']:
             if PANDAS_AVAILABLE:
                 df = pd.read_csv(file_path)

@@ -76,6 +76,14 @@ try:
 except ImportError:
     QDRANT_AVAILABLE = False
 
+# Chapter extraction
+try:
+    from chapter_extractor import ChapterExtractor
+    CHAPTER_EXTRACTOR_AVAILABLE = True
+except ImportError:
+    CHAPTER_EXTRACTOR_AVAILABLE = False
+    logger.warning("ChapterExtractor not available - chapter awareness will be disabled")
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -166,6 +174,21 @@ class ProcessingConfig:
     preserve_technical_terms: bool = True
     railway_terminology_path: Optional[str] = None
 
+    # Chapter awareness settings
+    enable_chapter_awareness: bool = True
+    chapter_based_hierarchy: bool = True  # Use chapters for parent-child relationships
+    max_chapter_size: int = 20000  # Max chars for a chapter chunk
+    grandchild_chunk_size: int = 800  # Size for fixed chunks within long sections
+    grandchild_overlap: int = 100
+    add_chapter_context_to_content: bool = False  # Prepend chapter info to chunk content
+
+    # Text cleaning and normalization (NLTK)
+    enable_text_cleaning: bool = True
+    remove_extra_whitespace: bool = True
+    normalize_unicode: bool = True
+    remove_special_chars: bool = False  # Keep technical symbols
+    lowercase_content: bool = False  # Preserve case for technical terms
+
 # =============================
 # Contextual Retrieval Engine
 # =============================
@@ -247,6 +270,95 @@ class ContextualRetrievalEngine:
         stop_words = set(['the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for'])
         keywords = [w for w in words if w not in stop_words and len(w) > 3][:5]
         return ", ".join(keywords) if keywords else "related content"
+
+# =============================
+# Text Cleaning and Normalization
+# =============================
+
+class TextCleaningEngine:
+    """NLTK-based text cleaning and normalization"""
+
+    def __init__(self, config: ProcessingConfig):
+        self.config = config
+
+        if NLTK_AVAILABLE:
+            self.lemmatizer = WordNetLemmatizer()
+            try:
+                self.stop_words = set(stopwords.words('english'))
+            except:
+                self.stop_words = set()
+                logger.warning("NLTK stopwords not available")
+        else:
+            self.lemmatizer = None
+            self.stop_words = set()
+
+    def clean_text(self, text: str) -> str:
+        """
+        Clean and normalize text using NLTK
+
+        Args:
+            text: Raw text content
+
+        Returns:
+            Cleaned and normalized text
+        """
+        if not self.config.enable_text_cleaning:
+            return text
+
+        # Unicode normalization
+        if self.config.normalize_unicode:
+            text = unicodedata.normalize('NFKC', text)
+
+        # Remove extra whitespace
+        if self.config.remove_extra_whitespace:
+            # Preserve single newlines but remove excessive whitespace
+            text = re.sub(r' +', ' ', text)  # Multiple spaces → single space
+            text = re.sub(r'\n\n+', '\n\n', text)  # Multiple newlines → double newline
+            text = re.sub(r'\t+', ' ', text)  # Tabs → space
+            text = text.strip()
+
+        # Remove special characters (optional - disabled by default for technical docs)
+        if self.config.remove_special_chars:
+            # Keep alphanumeric, basic punctuation, and newlines
+            text = re.sub(r'[^\w\s.,!?;:()\-\n]', '', text)
+
+        # Lowercase (optional - disabled by default to preserve technical terms)
+        if self.config.lowercase_content:
+            text = text.lower()
+
+        return text
+
+    def extract_keywords(self, text: str, top_k: int = 10) -> List[str]:
+        """Extract important keywords from text using NLTK"""
+
+        if not NLTK_AVAILABLE:
+            # Fallback: simple word frequency
+            words = text.lower().split()
+            word_freq = Counter(words)
+            return [w for w, _ in word_freq.most_common(top_k)]
+
+        # Tokenize
+        words = word_tokenize(text.lower())
+
+        # Remove stopwords and short words
+        words = [w for w in words if w.isalnum() and len(w) > 3 and w not in self.stop_words]
+
+        # Lemmatize
+        if self.lemmatizer:
+            words = [self.lemmatizer.lemmatize(w) for w in words]
+
+        # Count and return top keywords
+        word_freq = Counter(words)
+        return [w for w, _ in word_freq.most_common(top_k)]
+
+    def segment_sentences(self, text: str) -> List[str]:
+        """Segment text into sentences using NLTK"""
+
+        if not NLTK_AVAILABLE:
+            # Fallback: simple split on periods
+            return [s.strip() for s in text.split('.') if s.strip()]
+
+        return sent_tokenize(text)
 
 # =============================
 # Late Chunking Implementation
@@ -532,8 +644,288 @@ class HierarchicalChunkingEngine:
             # Character-based splitting
             for i in range(0, len(text), size):
                 chunks.append(text[i:i + size])
-        
+
         return chunks
+
+# =============================
+# Chapter-Aware Hierarchical Chunking
+# =============================
+
+class ChapterAwareHierarchicalChunking:
+    """
+    Creates hierarchical chunks based on document chapter structure
+    Uses semantic boundaries (chapters/sections) instead of arbitrary sizes
+    """
+
+    def __init__(self, config: ProcessingConfig, chapter_extractor=None):
+        self.config = config
+        self.chapter_extractor = chapter_extractor
+
+    def create_chapter_based_hierarchy(self,
+                                       content: str,
+                                       chapters: List[Dict[str, Any]],
+                                       file_path: str = None) -> Dict[str, Any]:
+        """
+        Build hierarchy based on chapter structure:
+        - Level 1 chapters → Parent chunks
+        - Level 2+ sub-chapters → Child chunks
+        - Long sections → Grandchild chunks (fixed size)
+
+        Args:
+            content: Full document text
+            chapters: Chapter structure from ChapterExtractor
+            file_path: Optional file path for document type detection
+
+        Returns:
+            Hierarchical structure with parent-child-grandchild relationships
+        """
+
+        if not chapters:
+            logger.warning("No chapter structure found - falling back to size-based chunking")
+            return self._fallback_hierarchy(content)
+
+        hierarchical_structure = []
+        parent_index = 0
+
+        # Group chapters by level 1 (main chapters)
+        level_1_chapters = [c for c in chapters if c['chapter_level'] == 1]
+
+        for parent_chapter in level_1_chapters:
+            # Extract parent chapter content
+            parent_content = content[parent_chapter['start_position']:parent_chapter['end_position']]
+
+            # Limit parent size if too large
+            if len(parent_content) > self.config.max_chapter_size:
+                logger.debug(f"Chapter '{parent_chapter['chapter_title']}' too large ({len(parent_content)} chars), will create children")
+
+            # Find all sub-chapters within this parent
+            sub_chapters = self._find_sub_chapters(chapters, parent_chapter)
+
+            # Build parent chunk
+            parent_chunk = {
+                'index': parent_index,
+                'content': parent_content,
+                'chapter_info': parent_chapter,
+                'metadata': {
+                    'level': 'parent',
+                    'chunk_type': 'chapter',
+                    'chapter_number': parent_chapter.get('chapter_number', ''),
+                    'chapter_title': parent_chapter['chapter_title'],
+                    'chapter_level': parent_chapter['chapter_level'],
+                    'chapter_path': parent_chapter.get('chapter_path', ''),
+                    'char_count': len(parent_content),
+                    'child_count': len(sub_chapters)
+                }
+            }
+
+            # Create child chunks from sub-chapters
+            children = []
+            for child_idx, sub_chapter in enumerate(sub_chapters):
+                child_content = content[sub_chapter['start_position']:sub_chapter['end_position']]
+
+                child_chunk = {
+                    'index': f"{parent_index}_{child_idx}",
+                    'content': child_content,
+                    'parent_index': parent_index,
+                    'chapter_info': sub_chapter,
+                    'metadata': {
+                        'level': 'child',
+                        'chunk_type': 'sub_chapter',
+                        'parent_id': parent_index,
+                        'chapter_number': sub_chapter.get('chapter_number', ''),
+                        'chapter_title': sub_chapter['chapter_title'],
+                        'chapter_level': sub_chapter['chapter_level'],
+                        'chapter_path': sub_chapter.get('chapter_path', ''),
+                        'parent_chapter': parent_chapter['chapter_title'],
+                        'char_count': len(child_content)
+                    }
+                }
+
+                # If child is too long, split into grandchildren (fixed-size chunks)
+                grandchildren = []
+                if len(child_content) > self.config.grandchild_chunk_size * 2:
+                    grandchildren = self._create_grandchild_chunks(
+                        child_content,
+                        parent_index,
+                        child_idx,
+                        sub_chapter
+                    )
+                    child_chunk['grandchildren'] = grandchildren
+
+                children.append(child_chunk)
+
+            # If parent has no children, create children from parent content
+            if not children:
+                if len(parent_content) > self.config.grandchild_chunk_size * 2:
+                    children = self._create_children_from_parent(
+                        parent_content,
+                        parent_index,
+                        parent_chapter
+                    )
+
+            hierarchical_structure.append({
+                'parent': parent_chunk,
+                'children': children,
+                'search_strategy': {
+                    'method': 'chapter_aware_search',
+                    'child_weight': 0.7,
+                    'parent_weight': 0.3
+                }
+            })
+
+            parent_index += 1
+
+        return {
+            'structure': hierarchical_structure,
+            'total_parents': len(hierarchical_structure),
+            'total_children': sum(len(h['children']) for h in hierarchical_structure),
+            'total_grandchildren': sum(
+                sum(len(c.get('grandchildren', [])) for c in h['children'])
+                for h in hierarchical_structure
+            ),
+            'metadata': {
+                'chunking_strategy': 'chapter_based_hierarchical',
+                'uses_semantic_boundaries': True,
+                'chapter_count': len(level_1_chapters)
+            }
+        }
+
+    def _find_sub_chapters(self,
+                          all_chapters: List[Dict],
+                          parent_chapter: Dict) -> List[Dict]:
+        """Find all sub-chapters (level 2+) within a parent chapter"""
+
+        parent_level = parent_chapter['chapter_level']
+        parent_start = parent_chapter['start_position']
+        parent_end = parent_chapter['end_position']
+
+        sub_chapters = []
+        for chapter in all_chapters:
+            if (chapter['chapter_level'] == parent_level + 1 and
+                parent_start <= chapter['start_position'] < parent_end):
+                sub_chapters.append(chapter)
+
+        return sub_chapters
+
+    def _create_grandchild_chunks(self,
+                                 content: str,
+                                 parent_idx: int,
+                                 child_idx: int,
+                                 chapter_info: Dict) -> List[Dict]:
+        """Create fixed-size grandchild chunks from long sections"""
+
+        grandchildren = []
+        size = self.config.grandchild_chunk_size
+        overlap = self.config.grandchild_overlap
+
+        for i in range(0, len(content), size - overlap):
+            chunk_content = content[i:i + size]
+            if len(chunk_content.strip()) >= self.config.min_chunk_size:
+                grandchildren.append({
+                    'index': f"{parent_idx}_{child_idx}_{len(grandchildren)}",
+                    'content': chunk_content,
+                    'parent_index': parent_idx,
+                    'child_index': f"{parent_idx}_{child_idx}",
+                    'chapter_info': chapter_info,
+                    'metadata': {
+                        'level': 'grandchild',
+                        'chunk_type': 'fixed_size',
+                        'parent_id': parent_idx,
+                        'child_id': f"{parent_idx}_{child_idx}",
+                        'chapter_title': chapter_info['chapter_title'],
+                        'chapter_path': chapter_info.get('chapter_path', ''),
+                        'position_in_section': i,
+                        'char_count': len(chunk_content)
+                    }
+                })
+
+        return grandchildren
+
+    def _create_children_from_parent(self,
+                                    parent_content: str,
+                                    parent_idx: int,
+                                    chapter_info: Dict) -> List[Dict]:
+        """Create child chunks when parent has no sub-chapters"""
+
+        children = []
+        size = self.config.grandchild_chunk_size
+        overlap = self.config.grandchild_overlap
+
+        for i in range(0, len(parent_content), size - overlap):
+            chunk_content = parent_content[i:i + size]
+            if len(chunk_content.strip()) >= self.config.min_chunk_size:
+                children.append({
+                    'index': f"{parent_idx}_{len(children)}",
+                    'content': chunk_content,
+                    'parent_index': parent_idx,
+                    'chapter_info': chapter_info,
+                    'metadata': {
+                        'level': 'child',
+                        'chunk_type': 'fixed_size_from_parent',
+                        'parent_id': parent_idx,
+                        'chapter_title': chapter_info['chapter_title'],
+                        'chapter_path': chapter_info.get('chapter_path', ''),
+                        'position_in_chapter': i,
+                        'char_count': len(chunk_content)
+                    }
+                })
+
+        return children
+
+    def _fallback_hierarchy(self, content: str) -> Dict[str, Any]:
+        """Fallback to size-based chunking when no chapters found"""
+
+        logger.info("Using fallback size-based hierarchy")
+
+        # Create simple parent-child structure
+        parent_size = self.config.parent_chunk_size
+        child_size = self.config.child_chunk_size
+
+        hierarchical_structure = []
+        parent_idx = 0
+
+        for i in range(0, len(content), parent_size):
+            parent_content = content[i:i + parent_size]
+
+            # Create children
+            children = []
+            for j in range(0, len(parent_content), child_size):
+                child_content = parent_content[j:j + child_size]
+                if len(child_content.strip()) >= self.config.min_chunk_size:
+                    children.append({
+                        'index': f"{parent_idx}_{len(children)}",
+                        'content': child_content,
+                        'parent_index': parent_idx,
+                        'metadata': {
+                            'level': 'child',
+                            'chunk_type': 'fallback_fixed_size',
+                            'parent_id': parent_idx
+                        }
+                    })
+
+            hierarchical_structure.append({
+                'parent': {
+                    'index': parent_idx,
+                    'content': parent_content,
+                    'metadata': {
+                        'level': 'parent',
+                        'chunk_type': 'fallback_parent'
+                    }
+                },
+                'children': children
+            })
+
+            parent_idx += 1
+
+        return {
+            'structure': hierarchical_structure,
+            'total_parents': len(hierarchical_structure),
+            'total_children': sum(len(h['children']) for h in hierarchical_structure),
+            'metadata': {
+                'chunking_strategy': 'fallback_size_based',
+                'uses_semantic_boundaries': False
+            }
+        }
 
 # =============================
 # Hybrid Search Preparation
@@ -1330,8 +1722,9 @@ class EnhancedDocumentProcessor:
     
     def __init__(self, config: Optional[ProcessingConfig] = None):
         self.config = config or ProcessingConfig()
-        
-        # Initialize all engines
+
+        # Initialize core engines
+        self.text_cleaner = TextCleaningEngine(self.config)
         self.contextual_engine = ContextualRetrievalEngine(self.config)
         self.late_chunking_engine = LateChunkingEngine(self.config)
         self.hierarchical_engine = HierarchicalChunkingEngine(self.config)
@@ -1339,16 +1732,32 @@ class EnhancedDocumentProcessor:
         self.entity_extractor = AdvancedEntityExtractor(self.config)
         self.quality_validator = QualityValidationEngine(self.config)
         self.versioning_system = DocumentVersioningSystem(self.config)
-        
+
+        # Initialize chapter awareness
+        if self.config.enable_chapter_awareness and CHAPTER_EXTRACTOR_AVAILABLE:
+            self.chapter_extractor = ChapterExtractor()
+            self.chapter_aware_chunking = ChapterAwareHierarchicalChunking(
+                self.config,
+                self.chapter_extractor
+            )
+            logger.info("✅ Chapter awareness enabled")
+        else:
+            self.chapter_extractor = None
+            self.chapter_aware_chunking = None
+            if self.config.enable_chapter_awareness:
+                logger.warning("⚠️  Chapter awareness requested but ChapterExtractor not available")
+
         # Initialize specialized processors
         if self.config.processing_profile == ProcessingProfile.RAILWAY:
             self.railway_processor = RailwayDocumentProcessor(self.config)
         else:
             self.railway_processor = None
-        
+
         logger.info("🚀 Enhanced Document Processor v4.0 initialized")
         logger.info(f"   Profile: {self.config.processing_profile.value}")
         logger.info(f"   Chunking: {self.config.chunking_strategy.value}")
+        logger.info(f"   Chapter-Based Hierarchy: {self.config.chapter_based_hierarchy}")
+        logger.info(f"   Text Cleaning: {self.config.enable_text_cleaning}")
         logger.info(f"   Contextual Retrieval: {self.config.enable_contextual_retrieval}")
         logger.info(f"   Late Chunking: {self.config.enable_late_chunking}")
         logger.info(f"   Hybrid Search: {self.config.enable_hybrid_search}")
@@ -1380,29 +1789,91 @@ class EnhancedDocumentProcessor:
         }
         
         try:
-            # Read document content
+            # Step 1: Read document content
             content = self._read_document(file_path)
-            
-            # Apply railway-specific processing if configured
+            original_content = content  # Keep original for chapter extraction
+
+            # Step 2: Apply text cleaning and normalization
+            if self.config.enable_text_cleaning:
+                logger.info("Cleaning and normalizing text...")
+                content = self.text_cleaner.clean_text(content)
+                result['metadata']['text_cleaned'] = True
+
+            # Step 3: Extract chapter structure (use original content for better detection)
+            chapters = []
+            if self.config.enable_chapter_awareness and self.chapter_extractor:
+                logger.info("Extracting chapter structure...")
+                doc_type = self._detect_document_type(file_path)
+                chapters = self.chapter_extractor.extract_chapter_structure(
+                    original_content,
+                    document_type=doc_type
+                )
+                if chapters:
+                    logger.info(f"✅ Found {len(chapters)} chapter headings")
+                    result['metadata']['chapter_count'] = len(chapters)
+                    result['metadata']['has_chapter_structure'] = True
+                else:
+                    logger.info("No chapter structure detected")
+                    result['metadata']['has_chapter_structure'] = False
+
+            # Step 4: Apply railway-specific processing if configured
             if self.railway_processor and self.config.processing_profile == ProcessingProfile.RAILWAY:
                 railway_result = self.railway_processor.process_railway_document(content)
                 content = railway_result['content']
                 result['railway_metadata'] = railway_result['metadata']
                 result['configurations'] = railway_result.get('configurations', [])
-            
-            # Extract entities and relationships
+
+            # Step 5: Extract entities and relationships
             if self.config.processing_profile in [ProcessingProfile.TECHNICAL, ProcessingProfile.RAILWAY]:
                 result['entities'] = self.entity_extractor.extract_entities_and_relations(content)
-            
-            # Apply chunking strategy
-            if self.config.chunking_strategy == ChunkingStrategy.HIERARCHICAL:
+
+            # Step 6: Apply chunking strategy (CHAPTER-AWARE!)
+            if self.config.chapter_based_hierarchy and self.chapter_aware_chunking and chapters:
+                # Use chapter-based hierarchical chunking
+                logger.info("Creating chapter-based hierarchical chunks...")
+                hierarchy = self.chapter_aware_chunking.create_chapter_based_hierarchy(
+                    original_content,  # Use original for accurate position mapping
+                    chapters,
+                    str(file_path)
+                )
+                chunks = self._flatten_chapter_hierarchy(hierarchy)
+                result['metadata']['chunking_method'] = 'chapter_based_hierarchical'
+                result['metadata']['hierarchy_stats'] = {
+                    'total_parents': hierarchy.get('total_parents', 0),
+                    'total_children': hierarchy.get('total_children', 0),
+                    'total_grandchildren': hierarchy.get('total_grandchildren', 0)
+                }
+            elif self.config.chunking_strategy == ChunkingStrategy.HIERARCHICAL:
+                # Use traditional size-based hierarchical chunking
+                logger.info("Creating size-based hierarchical chunks...")
                 hierarchy = self.hierarchical_engine.create_hierarchical_chunks(content)
                 chunks = self._flatten_hierarchy(hierarchy)
+                result['metadata']['chunking_method'] = 'size_based_hierarchical'
             elif self.config.enable_late_chunking:
                 chunks = self.late_chunking_engine.apply_late_chunking(content)
+                result['metadata']['chunking_method'] = 'late_chunking'
             else:
                 # Fallback to simple chunking
                 chunks = self._simple_chunking(content)
+                result['metadata']['chunking_method'] = 'simple'
+
+            # Step 7: Associate chunks with chapters (if not already done)
+            if chapters and not self.config.chapter_based_hierarchy:
+                logger.info("Associating chunks with chapters...")
+                chunks = self.chapter_extractor.associate_chunks_with_chapters(
+                    chunks,
+                    chapters,
+                    original_content
+                )
+
+            # Step 8: Optionally add chapter context to content
+            if (self.config.add_chapter_context_to_content and
+                self.chapter_extractor and
+                chapters):
+                logger.info("Adding chapter context to chunk content...")
+                for chunk in chunks:
+                    if 'chapter_info' in chunk:
+                        chunk['content'] = self.chapter_extractor.add_chapter_context_to_content(chunk)
             
             # Apply contextual retrieval
             if self.config.enable_contextual_retrieval:
@@ -1539,9 +2010,60 @@ class EnhancedDocumentProcessor:
                 child['hierarchy'] = 'child'
                 child['parent_index'] = parent['index']
                 chunks.append(child)
-        
+
         return chunks
-    
+
+    def _flatten_chapter_hierarchy(self, hierarchy: Dict) -> List[Dict[str, Any]]:
+        """
+        Flatten chapter-based hierarchical structure into a list of chunks
+        Preserves parent-child-grandchild relationships and chapter metadata
+        """
+        chunks = []
+
+        for item in hierarchy.get('structure', []):
+            # Add parent (chapter) as a chunk
+            parent = item['parent'].copy()
+            parent['hierarchy_level'] = 'parent'
+            chunks.append(parent)
+
+            # Add children (sub-chapters) as chunks
+            for child in item.get('children', []):
+                child_copy = {k: v for k, v in child.items() if k != 'grandchildren'}
+                child_copy['hierarchy_level'] = 'child'
+                chunks.append(child_copy)
+
+                # Add grandchildren (fixed-size chunks) if they exist
+                for grandchild in child.get('grandchildren', []):
+                    grandchild['hierarchy_level'] = 'grandchild'
+                    chunks.append(grandchild)
+
+        return chunks
+
+    def _detect_document_type(self, file_path: Path) -> str:
+        """
+        Detect document type for chapter extraction pattern matching
+
+        Returns:
+            'markdown', 'numbered', 'word', or 'pdf_outline'
+        """
+        ext = file_path.suffix.lower()
+
+        # Markdown files
+        if ext in ['.md', '.markdown']:
+            return 'markdown'
+
+        # PDF files - could use outline/bookmark style
+        elif ext == '.pdf':
+            return 'pdf_outline'
+
+        # Word documents - might use "Chapter N:" style
+        elif ext in ['.docx', '.doc']:
+            return 'word'
+
+        # Default to numbered chapters
+        else:
+            return 'numbered'
+
     def _apply_contextual_retrieval(self, 
                                    chunks: List[Dict], 
                                    document: Dict) -> List[Dict]:
